@@ -21,12 +21,15 @@ class NV9Manager;
 class AudioPlayer;
 class MainWindow;
 class DisplayMonitor;
+class LocalBridge;
 
 class Application : public QObject {
     Q_OBJECT
 
 public:
-    explicit Application(const Config& cfg, QObject* parent = nullptr);
+    explicit Application(Config& cfg,
+                          const QString& config_path,
+                          QObject* parent = nullptr);
     ~Application() override;
 
     void start();
@@ -76,7 +79,15 @@ private:
     // Called after the network/geolocation probe completes (or times out).
     void proceedStartup();
 
-    const Config& cfg_;
+    // cfg_ is mutable because LocalBridge may rewrite device_type / barriers
+    // at runtime (provisioning UI → update_config). All other consumers still
+    // treat it read-only.
+    Config&                cfg_;
+    QString                config_path_;
+
+    // True when the deployment profile includes a user-facing UI / cash
+    // reader. EntryOnly runs headless — no Qt window, no NV9.
+    bool                   has_ui_stack_ = true;
 
     MqttClient*            mqtt_     = nullptr;
     VehicleSensorManager*  sensor_   = nullptr;
@@ -86,6 +97,7 @@ private:
     MainWindow*            window_   = nullptr;
     CommandQueue*          cmd_queue_= nullptr;
     DisplayMonitor*        display_monitor_ = nullptr;
+    LocalBridge*           local_bridge_    = nullptr;
 
     bool                   display_available_ = true;
 

@@ -3,6 +3,8 @@
  */
 
 #include "app/Application.h"
+#include "app/LocalBridge.h"
+#include "app/MessageFilter.h"
 #include "app/NetworkInit.h"
 #include "mqtt/MqttClient.h"
 #include "hardware/BarrierManager.h"
@@ -15,16 +17,39 @@
 #include <QDebug>
 #include <QTimer>
 
-Application::Application(const Config& cfg, QObject* parent)
-    : QObject(parent), cfg_(cfg)
+Application::Application(Config& cfg,
+                          const QString& config_path,
+                          QObject* parent)
+    : QObject(parent), cfg_(cfg), config_path_(config_path)
 {
+    has_ui_stack_ = (cfg_.device.type != DeviceType::EntryOnly);
+
     mqtt_      = new MqttClient(cfg_, this);
     sensor_    = new VehicleSensorManager(cfg_, this);
     barrier_   = new BarrierManager(cfg_, sensor_, this);
-    nv9_       = new NV9Manager(cfg_, this);
     audio_     = new AudioPlayer(cfg_, this);
-    window_    = new MainWindow(cfg_);
     cmd_queue_ = new CommandQueue(this);
+
+    // NV9 + MainWindow only exist for UI-bearing profiles. EntryOnly runs
+    // headless: no cash reader, no screen. Foreign inbound messages
+    // (vehicle_info, payment_success, display_msg) are dropped further down.
+    if (has_ui_stack_) {
+        nv9_    = new NV9Manager(cfg_, this);
+        window_ = new MainWindow(cfg_);
+    } else {
+        qInfo() << "[App] entry_only profile — skipping NV9 + MainWindow";
+    }
+
+    // Local IPC bridge to wifi-provisioning. Always on — provisioning
+    // remains reachable even if the cloud MQTT is down.
+    LocalBridge::BridgeConfig lbcfg;
+    local_bridge_ = new LocalBridge(lbcfg, &cfg_, config_path_, this);
+    connect(local_bridge_, &LocalBridge::configUpdated, this, [this]() {
+        qInfo() << "[App] config updated from provisioning — "
+                   "relevant changes apply on next restart";
+        // Outright live-reloading device_type would require tearing down
+        // half the stack; safer to ask systemd to bounce the service.
+    });
 
     // MQTT → App
     connect(mqtt_, &MqttClient::connected,       this, &Application::onMqttConnected);
@@ -44,14 +69,18 @@ Application::Application(const Config& cfg, QObject* parent)
             this, &Application::onBarrierAutoClosed);
     connect(barrier_, &BarrierManager::vehiclePassed,
             this, &Application::onVehiclePassed);
-    connect(nv9_, &NV9Manager::cashInserted,
-            this, &Application::onNV9CashInserted);
-    connect(nv9_, &NV9Manager::errorOccurred,
-            this, &Application::onNV9Error);
+    if (nv9_) {
+        connect(nv9_, &NV9Manager::cashInserted,
+                this, &Application::onNV9CashInserted);
+        connect(nv9_, &NV9Manager::errorOccurred,
+                this, &Application::onNV9Error);
+    }
 
     // UI → App
-    connect(window_, &MainWindow::callSupportRequested,
-            this, &Application::onCallSupport);
+    if (window_) {
+        connect(window_, &MainWindow::callSupportRequested,
+                this, &Application::onCallSupport);
+    }
 
     // Display hot-plug monitor (Linux only, no-op if status file not found)
     display_monitor_ = new DisplayMonitor(this);
@@ -73,24 +102,28 @@ Application::Application(const Config& cfg, QObject* parent)
 }
 
 Application::~Application() {
+    if (local_bridge_) local_bridge_->stop();
     mqtt_->disconnectGraceful();
     barrier_->closeAll();
     if (sensor_) sensor_->shutdown();
-    nv9_->stop();
+    if (nv9_)    nv9_->stop();
     delete window_;
 }
 
 void Application::start() {
-    qInfo() << "[App] Starting as device=" << cfg_.device.id;
+    qInfo() << "[App] Starting as device=" << cfg_.device.id
+            << "type=" << deviceTypeStr(cfg_.device.type);
 
-    if (cfg_.ui.fullscreen)
-        window_->showFullScreen();
-    else
-        window_->show();
+    if (window_) {
+        if (cfg_.ui.fullscreen)
+            window_->showFullScreen();
+        else
+            window_->show();
 
-    window_->showIdle();
-    window_->setStatusMessage("Đang kiểm tra kết nối mạng...");
-    window_->setMqttStatus(false);
+        window_->showIdle();
+        window_->setStatusMessage("Đang kiểm tra kết nối mạng...");
+        window_->setMqttStatus(false);
+    }
 
     // Probe internet + detect country. proceedStartup() is called once the
     // probe resolves (or times out after 5 s) so startup never blocks.
@@ -101,10 +134,11 @@ void Application::start() {
 
         if (connected) {
             qInfo() << "[App] Network OK — country=" << cc << "tz=" << tz;
-            window_->setStatusMessage("Kết nối mạng: OK");
+            if (window_) window_->setStatusMessage("Kết nối mạng: OK");
         } else {
             qWarning() << "[App] Không có internet hoặc geolocation thất bại";
-            window_->setStatusMessage("Không có mạng — tiếp tục với cài đặt mặc định");
+            if (window_) window_->setStatusMessage(
+                "Không có mạng — tiếp tục với cài đặt mặc định");
         }
 
         proceedStartup();
@@ -120,8 +154,16 @@ void Application::proceedStartup() {
 
     sensor_->init();
     barrier_->init();
-    if (cfg_.device.has_cash_reader)
+
+    // Hand the barrier driver to the provisioning bridge now that it's open.
+    if (local_bridge_) {
+        local_bridge_->setBarrierDriver(barrier_->driver());
+        local_bridge_->start();
+    }
+
+    if (nv9_ && cfg_.device.has_cash_reader)
         nv9_->start();
+
     mqtt_->connectToServer();
 }
 
@@ -129,23 +171,36 @@ void Application::proceedStartup() {
 
 void Application::onMqttConnected() {
     qInfo() << "[App] MQTT connected";
-    window_->setMqttStatus(true);
-    window_->setStatusMessage("Kết nối server: OK");
+    if (window_) {
+        window_->setMqttStatus(true);
+        window_->setStatusMessage("Kết nối server: OK");
+    }
     audio_->play("open_entry"); // startup chime
 }
 
 void Application::onMqttDisconnected() {
     qWarning() << "[App] MQTT disconnected";
-    window_->setMqttStatus(false);
-    window_->setStatusMessage("Mất kết nối server...");
+    if (window_) {
+        window_->setMqttStatus(false);
+        window_->setStatusMessage("Mất kết nối server...");
+    }
 }
 
 void Application::onMqttError(const QString& reason) {
     qCritical() << "[App] MQTT error:" << reason;
-    window_->setStatusMessage("Lỗi kết nối: " + reason);
+    if (window_) window_->setStatusMessage("Lỗi kết nối: " + reason);
 }
 
 void Application::onInboundMessage(const InboundMessage& msg) {
+    // Filter foreign messages based on deployment profile. The same gate is
+    // exercised directly by parking_selftest so changes to the matrix can't
+    // drift silently.
+    if (!parking::shouldDispatch(cfg_.device.type, msg.type)) {
+        qInfo() << "[App] drop foreign msg: type=" << static_cast<int>(msg.type)
+                << "mode=" << deviceTypeStr(cfg_.device.type);
+        return;
+    }
+
     switch (msg.type) {
         case InboundMsgType::VehicleInfo:
             handleVehicleInfo(*msg.vehicle_info);
@@ -176,6 +231,11 @@ void Application::onInboundMessage(const InboundMessage& msg) {
 // ── Message Handlers ──────────────────────────────────────────────────────────
 
 void Application::handleVehicleInfo(const VehicleInfo& vi) {
+    if (!window_) {
+        qInfo() << "[App] entry_only — dropping vehicle_info for plate="
+                << vi.plate;
+        return;
+    }
     qInfo() << "[App] VehicleInfo: plate=" << vi.plate
             << "ticket=" << static_cast<int>(vi.ticket_type)
             << "amount=" << vi.amount_due;
@@ -206,7 +266,7 @@ void Application::handleVehicleInfo(const VehicleInfo& vi) {
         // Hourly: display payment screen
         window_->showExitHourly(vi);
 
-        if (vi.payment_methods.contains("cash") && cfg_.device.has_cash_reader) {
+        if (vi.payment_methods.contains("cash") && nv9_ && cfg_.device.has_cash_reader) {
             nv9_->enableAccept();
             audio_->play("insert_money");
         }
@@ -214,7 +274,7 @@ void Application::handleVehicleInfo(const VehicleInfo& vi) {
         payment_timer_->start();
 
         if (cfg_.self_test.enabled && vi.scenario_tag == "cash_auto_pay"
-            && cfg_.device.has_cash_reader && vi.amount_due > 0) {
+            && nv9_ && cfg_.device.has_cash_reader && vi.amount_due > 0) {
             qInfo() << "[SelfTest] scheduling simulated cash payment"
                     << vi.amount_due << "for session" << vi.session_id;
             QTimer::singleShot(cfg_.self_test.auto_cash_insert_delay_ms, this,
@@ -242,6 +302,7 @@ void Application::handleOpenCommand(const OpenCommand& cmd) {
 }
 
 void Application::handleQrConfirmed(const QrPaymentConfirmed& qr) {
+    if (!window_) return;   // entry_only — filter already ignored this type
     qInfo() << "[App] QR Payment confirmed: amount=" << qr.amount_paid
             << "app=" << qr.payment_app;
 
@@ -259,7 +320,7 @@ void Application::handlePaymentSuccess(const PaymentSuccess& ps) {
 
     // Lock out the session — stop accepting cash and cancel the payment timer.
     payment_timer_->stop();
-    nv9_->disableAccept();
+    if (nv9_) nv9_->disableAccept();
     session_active_ = false;
     payment_stale_  = false;
 
@@ -291,11 +352,12 @@ void Application::handlePaymentSuccess(const PaymentSuccess& ps) {
 
     // Use the amount and payment method the device tracked locally —
     // the server's payment_success no longer echoes those fields.
-    window_->showPaymentSuccess(current_plate_, current_amount_paid_,
-                                 current_payment_method_, countdown);
+    if (window_) window_->showPaymentSuccess(current_plate_, current_amount_paid_,
+                                              current_payment_method_, countdown);
 }
 
 void Application::handleDisplayMsg(const DisplayMessage& dm) {
+    if (!window_) return;   // entry_only — filter already dropped this
     qInfo() << "[App] Display message:" << dm.message;
     window_->showDisplayMessage(dm);
     if (dm.play_sound && !dm.sound_text.isEmpty())
@@ -324,7 +386,8 @@ void Application::runCommand(const CommandQueue::Command& cmd) {
         case CommandQueue::Kind::Open:
             if (cmd.play_sound)
                 audio_->play(cmd.sound_file.isEmpty() ? "open_exit" : cmd.sound_file);
-            window_->showBarrierOpening(cmd.barrier_id, current_plate_);
+            if (window_)
+                window_->showBarrierOpening(cmd.barrier_id, current_plate_);
             barrier_->requestOpen(cmd.barrier_id, cmd.auto_close_sec);
             break;
 
@@ -341,7 +404,7 @@ void Application::runCommand(const CommandQueue::Command& cmd) {
 void Application::onBarrierStatusChanged(const QString& barrier_id,
                                           const QString& position) {
     qInfo() << "[App] Barrier" << barrier_id << "position:" << position;
-    window_->setBarrierStatus(barrier_id, position);
+    if (window_) window_->setBarrierStatus(barrier_id, position);
 }
 
 void Application::onBarrierAutoClosed(const QString& barrier_id) {
@@ -349,10 +412,10 @@ void Application::onBarrierAutoClosed(const QString& barrier_id) {
             << "— resetting session";
     session_active_ = false;
     payment_stale_  = false;
-    nv9_->disableAccept();
+    if (nv9_) nv9_->disableAccept();
     payment_timer_->stop();
     current_scenario_tag_.clear();
-    window_->showIdle();
+    if (window_) window_->showIdle();
 }
 
 void Application::onVehiclePassed(const QString& barrier_id) {
@@ -360,6 +423,7 @@ void Application::onVehiclePassed(const QString& barrier_id) {
 }
 
 void Application::onNV9CashInserted(quint32 amount) {
+    if (!nv9_) return;  // defensive — signal shouldn't fire without NV9
     if (!session_active_) {
         qWarning() << "[App] Cash inserted but no session active — rejecting";
         nv9_->rejectNote();
@@ -382,7 +446,7 @@ void Application::onNV9CashInserted(quint32 amount) {
             << "due=" << current_amount_due_
             << "remaining=" << remaining;
 
-    window_->updatePaymentReceived(current_amount_paid_, remaining);
+    if (window_) window_->updatePaymentReceived(current_amount_paid_, remaining);
 
     if (current_amount_paid_ >= current_amount_due_) {
         // Full payment received
@@ -406,7 +470,7 @@ void Application::onNV9CashInserted(quint32 amount) {
 
 void Application::onNV9Error(const QString& error) {
     qCritical() << "[App] NV9 error:" << error;
-    window_->setStatusMessage("Lỗi đầu đọc tiền: " + error);
+    if (window_) window_->setStatusMessage("Lỗi đầu đọc tiền: " + error);
     audio_->play("error");
 }
 
@@ -434,7 +498,7 @@ void Application::onCallSupport() {
     }
 
     audio_->play("error");
-    window_->showNotification(
+    if (window_) window_->showNotification(
         "Đã gửi yêu cầu hỗ trợ. Bảo vệ sẽ đến trong giây lát.\n"
         "Vui lòng nộp tiền mặt cho bảo vệ để mở cần.",
         10 * 1000);
@@ -448,8 +512,8 @@ void Application::onIdleTimeout() {
         // fall back to the legacy reset path.
         qWarning() << "[App] Non-hourly session timed out — resetting";
         session_active_ = false;
-        nv9_->disableAccept();
-        window_->showIdle();
+        if (nv9_)    nv9_->disableAccept();
+        if (window_) window_->showIdle();
         return;
     }
 
@@ -464,7 +528,7 @@ void Application::onIdleTimeout() {
                << "— escalating to server + guard";
 
     payment_stale_ = true;
-    nv9_->disableAccept();   // stop accepting cash into the validator
+    if (nv9_) nv9_->disableAccept();   // stop accepting cash into the validator
 
     // Tell the server so it stops waiting for this plate.
     mqtt_->publishSessionAbandoned(current_session_id_,
@@ -477,7 +541,7 @@ void Application::onIdleTimeout() {
     // GỌI HỖ TRỢ button mounted on the kiosk to summon a guard, who will
     // then trigger a ManualOverride OpenCommand via the ops dashboard.
     audio_->play("error");
-    window_->showNotification(
+    if (window_) window_->showNotification(
         "Quá thời gian thanh toán.\n"
         "Vui lòng nhấn nút GỌI HỖ TRỢ (phím cứng) để gọi bảo vệ.",
         30 * 1000);
@@ -495,7 +559,7 @@ void Application::onIdleTimeout() {
 }
 
 void Application::onDisplayConnected() {
-    if (display_available_) return;
+    if (display_available_ || !window_) return;
     display_available_ = true;
     qInfo() << "[App] Display reconnected — restoring window";
 
@@ -515,7 +579,7 @@ void Application::onDisplayConnected() {
 }
 
 void Application::onDisplayDisconnected() {
-    if (!display_available_) return;
+    if (!display_available_ || !window_) return;
     display_available_ = false;
     qWarning() << "[App] Display disconnected — hiding window, backend continues";
 

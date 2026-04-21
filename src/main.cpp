@@ -10,6 +10,7 @@
 
 #include <csignal>
 #include <cstdio>
+#include <unistd.h>
 
 #include "app/Config.h"
 #include "app/Application.h"
@@ -147,7 +148,7 @@ int main(int argc, char* argv[]) {
         bc.id = cfg.device.id + "_" + bc.id;
 
     // Start application
-    Application parking_app(cfg);
+    Application parking_app(cfg, config_path);
     parking_app.start();
 
     const int ret = app.exec();
