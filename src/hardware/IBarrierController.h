@@ -61,6 +61,13 @@ public:
                                    uint8_t end_addr = 32) = 0;
     virtual void addSlave(uint8_t addr) = 0;
 
+    // Rewrite a barrier's own Modbus slave address via FC06. The caller must
+    // ensure only one barrier is physically connected during the operation —
+    // otherwise multiple units with the same current_addr will corrupt each
+    // other's registers. Intended for provisioning only.
+    virtual BarrierDriverError setSlaveAddress(uint8_t current_addr,
+                                                uint8_t new_addr) = 0;
+
     // ── Control ─────────────────────────────────────────────────────────
     virtual BarrierDriverError raise(uint8_t slave_addr) = 0;
     virtual BarrierDriverError lower(uint8_t slave_addr) = 0;

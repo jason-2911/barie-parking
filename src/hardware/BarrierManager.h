@@ -57,6 +57,12 @@ public:
     bool    isOnline(const QString& barrier_id) const;
     QString position(const QString& barrier_id) const;
 
+    // Exposes the low-level driver for provisioning operations (barrier
+    // scan, Modbus-address rewrite). The driver's own mutex serialises
+    // these against regular open/close traffic. Returns nullptr until
+    // init() has run.
+    IBarrierController* driver() const noexcept { return driver_.get(); }
+
 signals:
     void statusChanged(const QString& barrier_id, const QString& position);
     void faultDetected(const QString& barrier_id, const QString& fault);

@@ -90,6 +90,15 @@ void BarrierControllerModbus::addSlave(uint8_t addr) {
     qInfo() << "[Barrier][STUB] addSlave(" << addr << ")";
 }
 
+BarrierDriverError
+BarrierControllerModbus::setSlaveAddress(uint8_t current_addr, uint8_t new_addr) {
+    qInfo().nospace() << "[Barrier][STUB] setSlaveAddress("
+                       << current_addr << " → " << new_addr << ")";
+    slaves_.removeAll(current_addr);
+    if (!slaves_.contains(new_addr)) slaves_.append(new_addr);
+    return BarrierDriverError::OK;
+}
+
 BarrierDriverError BarrierControllerModbus::raise(uint8_t slave) {
     qInfo() << "[Barrier][STUB] RAISE slave=" << slave;
     if (event_cb_) event_cb_(slave, BarrierDriverPosition::Up);
@@ -304,6 +313,47 @@ BarrierControllerModbus::scan(uint8_t start_addr, uint8_t end_addr) {
 
 void BarrierControllerModbus::addSlave(uint8_t addr) {
     if (!slaves_.contains(addr)) slaves_.append(addr);
+}
+
+BarrierDriverError
+BarrierControllerModbus::setSlaveAddress(uint8_t current_addr, uint8_t new_addr)
+{
+    if (current_addr < 1 || current_addr > 247 ||
+        new_addr     < 1 || new_addr     > 247) {
+        return BarrierDriverError::INVALID_ARG;
+    }
+    if (!isOpen()) return BarrierDriverError::NOT_OPEN;
+
+    std::lock_guard<std::mutex> lock(bus_mutex_);
+
+    // FC06: slave, FC, reg_hi, reg_lo, val_hi, val_lo, crc_lo, crc_hi
+    uint8_t frame[8];
+    frame[0] = current_addr;
+    frame[1] = MB_FC_WRITE_REGISTER;
+    frame[2] = static_cast<uint8_t>(REG_SLAVE_ADDR >> 8);
+    frame[3] = static_cast<uint8_t>(REG_SLAVE_ADDR & 0xFF);
+    frame[4] = 0x00;
+    frame[5] = new_addr;
+    uint16_t crc = crc16(frame, 6);
+    frame[6] = static_cast<uint8_t>(crc & 0xFF);
+    frame[7] = static_cast<uint8_t>(crc >> 8);
+
+    serialFlush();
+    auto err = serialWrite(frame, 8);
+    if (err != BarrierDriverError::OK) return err;
+
+    // FC06 echoes the request verbatim on success. Give the device a little
+    // longer than usual since writing to the config register can trigger a
+    // NVRAM flush on some firmwares.
+    uint8_t resp[8]; size_t got = 0;
+    err = serialRead(resp, 8, 800, got);
+    if (err != BarrierDriverError::OK) return err;
+    if (got != 8) return BarrierDriverError::TIMEOUT;
+
+    // Refresh our slave list so subsequent ops target the new address.
+    slaves_.removeAll(current_addr);
+    if (!slaves_.contains(new_addr)) slaves_.append(new_addr);
+    return BarrierDriverError::OK;
 }
 
 BarrierDriverError BarrierControllerModbus::raise(uint8_t slave) {

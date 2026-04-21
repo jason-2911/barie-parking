@@ -29,14 +29,36 @@
 #define COIL_SELF_TEST           0x0003
 
 // Monitor registers (FC03, base 0xD000)
-#define REG_RUN_STATUS           0xD014
-#define REG_FAULT_CODE           0xD015
+#define REG_RUN_STATUS           0xD014    // 监控参数14 运行状态 (2 bytes)
+#define REG_FAULT_CODE           0xD015    // 监控参数15 故障码   (2 bytes, 0-6)
+#define REG_PORT_INPUT           0xD016    // 监控参数16 端口输入状态 (V3.00+)
 
-// Run status bits
-#define STATUS_BIT_RUNNING       (1 << 0)
-#define STATUS_BIT_DIRECTION     (1 << 1)
-#define STATUS_BIT_DOWN_POS      (1 << 8)
-#define STATUS_BIT_UP_POS        (1 << 9)
+// Configuration registers (FC06). Vendor mnemonics in the "H00-XX" menu:
+//   H00-31 → slave address (0x0031)
+//   H00-32 → baud rate     (0x0032) — not written from firmware, read-only ref
+#define REG_SLAVE_ADDR           0x0031
+#define REG_BAUD_RATE            0x0032
+
+// ─── D014H run status bits ──────────────────────────────────────────────────
+// Source: 通讯协议操作说明.docx — "运行状态标置位" tables.
+// The prior revision had DOWN_POS/UP_POS off-by-one which broke position
+// detection entirely (parsePosition always returned Unknown on real gear).
+// Correct mapping, precise to the doc:
+//   Low byte:  bit0=running, bit1=direction, bit2=power_down,
+//              bit4=normal_on, bit5=self_tested, bit6=selftest_err
+//   High byte: bit9=down_pos, bit10=up_pos, bit11=in_position,
+//              bit12=green_led, bit13=red_led
+#define STATUS_BIT_RUNNING       (1 << 0)   // Bit0 运行状态
+#define STATUS_BIT_DIRECTION     (1 << 1)   // Bit1 运行方向
+#define STATUS_BIT_POWER_DOWN    (1 << 2)   // Bit2 电源掉电
+#define STATUS_BIT_NORMAL_ON     (1 << 4)   // Bit4 正常上电
+#define STATUS_BIT_SELF_TESTED   (1 << 5)   // Bit5 已自检
+#define STATUS_BIT_SELFTEST_ERR  (1 << 6)   // Bit6 自检错误
+#define STATUS_BIT_DOWN_POS      (1 << 9)   // Bit9  下杆到位
+#define STATUS_BIT_UP_POS        (1 << 10)  // Bit10 上杆到位
+#define STATUS_BIT_IN_POSITION   (1 << 11)  // Bit11 到位输出 (either limit)
+#define STATUS_BIT_GREEN_LIGHT   (1 << 12)  // Bit12 绿灯输出
+#define STATUS_BIT_RED_LIGHT     (1 << 13)  // Bit13 红灯输出
 
 class BarrierControllerModbus : public IBarrierController {
 public:
@@ -54,6 +76,9 @@ public:
     QVector<uint8_t> scan(uint8_t start_addr = 1,
                            uint8_t end_addr = 32) override;
     void addSlave(uint8_t addr) override;
+
+    BarrierDriverError setSlaveAddress(uint8_t current_addr,
+                                        uint8_t new_addr) override;
 
     BarrierDriverError raise(uint8_t slave_addr) override;
     BarrierDriverError lower(uint8_t slave_addr) override;
