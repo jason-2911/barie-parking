@@ -1,0 +1,119 @@
+/**
+ * BarrierManager.h
+ * Orchestrator for every barrier declared in config.
+ *
+ * Wraps the low-level driver (IBarrierController) and runs a small,
+ * well-defined state machine per barrier so the rest of the app only
+ * sees high-level intents (requestOpen / requestClose).
+ *
+ * State machine (one per barrier):
+ *
+ *   Idle ──OPEN──▶ Raising ──▶ WaitingVehicle ──sensor:present──▶ Passing
+ *                                   │                                │
+ *                        safety-timeout                    sensor:clear
+ *                                   │                                │
+ *                                   ▼                                ▼
+ *                                 ClearDelay ◀─────────────────  ClearDelay
+ *                                   │   ▲
+ *                          timeout  │   └── OPEN (reopen, cancel timer)
+ *                                   ▼
+ *                                Lowering ──OPEN──▶ Raising (reopen mid-close)
+ *                                   │
+ *                                   ▼
+ *                                  Idle
+ *
+ * Guarantees:
+ *   - OPEN arriving during Lowering aborts the close and re-raises.
+ *   - Safety timeout fires a forced close if no vehicle ever appears,
+ *     so a mis-triggered OPEN cannot leave the gate up forever.
+ */
+
+#pragma once
+
+#include <QObject>
+#include <QMap>
+#include <QTimer>
+#include <memory>
+#include "app/Config.h"
+#include "hardware/IBarrierController.h"
+
+class VehicleSensorManager;
+
+class BarrierManager : public QObject {
+    Q_OBJECT
+public:
+    explicit BarrierManager(const Config& cfg,
+                             VehicleSensorManager* sensor,
+                             QObject* parent = nullptr);
+    ~BarrierManager() override;
+
+    void init();
+    void closeAll();
+
+    // High-level requests — go through the state machine.
+    void requestOpen(const QString& barrier_id, int auto_close_sec);
+    void requestClose(const QString& barrier_id);
+
+    bool    isOnline(const QString& barrier_id) const;
+    QString position(const QString& barrier_id) const;
+
+signals:
+    void statusChanged(const QString& barrier_id, const QString& position);
+    void faultDetected(const QString& barrier_id, const QString& fault);
+
+    // State-machine transitions — useful for UI and telemetry.
+    void vehiclePassing(const QString& barrier_id);
+    void vehiclePassed (const QString& barrier_id);
+    void autoClosed    (const QString& barrier_id);
+
+private slots:
+    void pollStatus();
+    void onVehiclePresent();
+    void onVehicleCleared();
+
+private:
+    enum class State {
+        Idle,
+        WaitingVehicle,   // barrier up, awaiting the vehicle to enter zone
+        Passing,          // vehicle currently in the zone
+        ClearDelay,       // vehicle cleared; countdown before lowering
+        Lowering,         // close command issued; gate physically moving down
+    };
+
+    struct FsmSlot {
+        State   state           = State::Idle;
+        int     auto_close_sec  = 10;
+        QTimer* clear_timer     = nullptr;   // clear-delay → lower
+        QTimer* safety_timer    = nullptr;   // fallback if sensor never sees vehicle
+    };
+
+    // Edges
+    void enterWaiting(const QString& barrier_id);
+    void enterPassing(const QString& barrier_id);
+    void enterClearDelay(const QString& barrier_id);
+    void enterLowering(const QString& barrier_id);
+    void enterIdle(const QString& barrier_id);
+    void cancelTimers(FsmSlot& slot);
+    void armSafety(const QString& barrier_id, FsmSlot& slot);
+
+    // Mechanical I/O
+    void rawRaise(const QString& barrier_id);
+    void rawLower(const QString& barrier_id);
+
+    // Which barrier is currently interacting with the (single-lane) sensor?
+    QString activeBarrierForSensor() const;
+
+    uint8_t modbusAddrFor(const QString& barrier_id) const;
+    QString barrierIdFor(uint8_t modbus_addr) const;
+    static QString positionToString(BarrierDriverPosition p);
+    static const char* stateName(State s);
+
+    const Config&                      cfg_;
+    VehicleSensorManager*              sensor_ = nullptr;
+    std::unique_ptr<IBarrierController> driver_;
+    QTimer*                             poll_timer_ = nullptr;
+
+    QMap<QString, QString>  positions_;
+    QMap<QString, bool>     online_;
+    QMap<QString, FsmSlot>  fsm_;
+};
