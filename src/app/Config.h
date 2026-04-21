@@ -30,12 +30,17 @@ struct VehicleSensorConfig {
 
 struct Config {
     struct Device {
-        QString id;                 // may be overwritten at startup by DeviceId::detect()
-        QString id_prefix;          // prepended to the auto-detected id (e.g. "pk_")
-        bool    auto_id  = true;    // if true, detect() runs and replaces `id`
-        QString description;
-        bool    has_cash_reader = true;
-        bool    has_audio       = true;
+        QString    id;                 // may be overwritten at startup by DeviceId::detect()
+        QString    id_prefix;          // prepended to the auto-detected id (e.g. "pk_")
+        bool       auto_id  = true;    // if true, detect() runs and replaces `id`
+        QString    description;
+        // Deployment profile. Drives conditional init: entry_only is headless
+        // (no NV9, no UI); exit_only and full bring up the full UI + NV9 stack.
+        // If unspecified in config.json we fall back to ExitOnly for backward
+        // compat with existing deployments.
+        DeviceType type            = DeviceType::ExitOnly;
+        bool       has_cash_reader = true;
+        bool       has_audio       = true;
     } device;
 
     struct Mqtt {
@@ -105,6 +110,11 @@ struct Config {
 
     // Load from JSON file, returns false on error
     bool load(const QString& path);
+
+    // Persist current state back to disk. Atomic (tmp + rename).
+    // Only fields that are driven from wifi-provisioning are rewritten —
+    // unknown fields in the file are preserved as-is.
+    bool save(const QString& path) const;
 
     // Lookup barrier by id
     const BarrierConfig* findBarrier(const QString& id) const {

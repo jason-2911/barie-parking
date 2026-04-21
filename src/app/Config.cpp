@@ -4,6 +4,8 @@
 
 #include "app/Config.h"
 #include <QFile>
+#include <QFileInfo>
+#include <QDir>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -31,7 +33,20 @@ bool Config::load(const QString& path) {
     device.id_prefix      = dev["id_prefix"].toString();
     device.auto_id        = dev["auto_id"].toBool(true);
     device.description    = dev["description"].toString();
-    device.has_cash_reader= dev["has_cash_reader"].toBool(true);
+    // type: entry_only | exit_only | full. Default ExitOnly for back-compat.
+    {
+        QString ts = dev["type"].toString();
+        if (!ts.isEmpty()) {
+            device.type = deviceTypeFromStr(ts);
+            if (device.type == DeviceType::Unknown) {
+                qWarning() << "[Config] unknown device.type" << ts
+                           << "— falling back to exit_only";
+                device.type = DeviceType::ExitOnly;
+            }
+        }
+    }
+    device.has_cash_reader= dev["has_cash_reader"].toBool(
+        device.type != DeviceType::EntryOnly);
     device.has_audio      = dev["has_audio"].toBool(true);
 
     // mqtt
@@ -122,6 +137,62 @@ bool Config::load(const QString& path) {
     }
 
     qInfo() << "Config loaded: device=" << device.id
+            << "type=" << deviceTypeStr(device.type)
             << "barriers=" << barriers.size();
+    return true;
+}
+
+bool Config::save(const QString& path) const {
+    // Re-read the original file so we preserve any keys the loader doesn't
+    // touch (audio maps, logging paths, user tweaks, etc.). Only the fields
+    // driven from provisioning are rewritten.
+    QJsonObject root;
+    QFile in(path);
+    if (in.open(QIODevice::ReadOnly)) {
+        QJsonParseError err;
+        auto doc = QJsonDocument::fromJson(in.readAll(), &err);
+        if (err.error == QJsonParseError::NoError && doc.isObject()) {
+            root = doc.object();
+        }
+        in.close();
+    }
+
+    // Patch device.type
+    QJsonObject dev = root["device"].toObject();
+    dev["type"]            = deviceTypeStr(device.type);
+    dev["has_cash_reader"] = device.has_cash_reader;
+    root["device"] = dev;
+
+    // Patch barriers
+    QJsonArray arr;
+    for (const auto& b : barriers) {
+        QJsonObject o;
+        o["id"]                 = b.id;
+        o["direction"]          = directionStr(b.direction);
+        o["modbus_addr"]        = b.modbus_addr;
+        o["description"]        = b.description;
+        o["auto_close_seconds"] = b.auto_close_seconds;
+        arr.append(o);
+    }
+    root["barriers"] = arr;
+
+    QDir().mkpath(QFileInfo(path).absolutePath());
+
+    const QString tmp = path + ".tmp";
+    QFile out(tmp);
+    if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        qWarning() << "[Config] save: cannot write" << tmp;
+        return false;
+    }
+    out.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    out.close();
+
+    // Atomic replace
+    QFile::remove(path);
+    if (!QFile::rename(tmp, path)) {
+        qWarning() << "[Config] save: rename" << tmp << "→" << path << "failed";
+        return false;
+    }
+    qInfo() << "[Config] saved" << path;
     return true;
 }

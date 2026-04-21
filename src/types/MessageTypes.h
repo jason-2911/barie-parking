@@ -14,6 +14,11 @@
 
 enum class BarrierDirection { Entry, Exit, Unknown };
 enum class TicketType       { Hourly, Monthly, Free, Unknown };
+// DeviceType: controls which subsystems the device brings up.
+//   - EntryOnly: headless, barrier(s) only, server-driven open/close. NV9 + UI skipped.
+//   - ExitOnly:  single exit barrier, NV9 + UI active (current default behaviour).
+//   - Full:      entry + exit barriers on the same lane, NV9 + UI active.
+enum class DeviceType       { EntryOnly, ExitOnly, Full, Unknown };
 enum class PaymentMethod    { Cash, QR, NFC, Unknown };
 enum class OpenReason       {
     PaymentConfirmed,
@@ -192,6 +197,22 @@ inline BarrierDirection directionFromStr(const QString& s) {
     if (s == "entry") return BarrierDirection::Entry;
     if (s == "exit")  return BarrierDirection::Exit;
     return BarrierDirection::Unknown;
+}
+
+inline QString deviceTypeStr(DeviceType t) {
+    switch (t) {
+        case DeviceType::EntryOnly: return "entry_only";
+        case DeviceType::ExitOnly:  return "exit_only";
+        case DeviceType::Full:      return "full";
+        default:                    return "unknown";
+    }
+}
+
+inline DeviceType deviceTypeFromStr(const QString& s) {
+    if (s == "entry_only") return DeviceType::EntryOnly;
+    if (s == "exit_only")  return DeviceType::ExitOnly;
+    if (s == "full")       return DeviceType::Full;
+    return DeviceType::Unknown;
 }
 
 inline TicketType ticketFromStr(const QString& s) {

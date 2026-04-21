@@ -4,6 +4,7 @@
     "id_prefix": "pk_",
     "auto_id": true,
     "description": "Tầng B1 - Làn ra",
+    "type": "exit_only",
     "has_cash_reader": true,
     "has_display": true,
     "has_audio": true
