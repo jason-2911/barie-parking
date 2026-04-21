@@ -1,0 +1,20 @@
+[Unit]
+Description=Parking Client
+After=network-online.target graphical.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+ExecStart=/usr/bin/parking_client --config /etc/parking_client/config.json
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/pi/.Xauthority
+Environment=QT_QPA_PLATFORM=xcb
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=graphical.target

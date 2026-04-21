@@ -1,0 +1,29 @@
+[Unit]
+Description=SmartPark Parking Barrier Client
+After=network-online.target mosquitto.service
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=orangepi
+WorkingDirectory=/home/orangepi/parking
+ExecStart=/home/orangepi/parking/build/parking_client -c /home/orangepi/parking/config.json
+Environment=QT_QPA_PLATFORM=linuxfb
+Environment=QT_QPA_FB_DRM=1
+Environment=QT_LOGGING_RULES=*.debug=false
+
+# Restart on any exit — covers SIGABRT from display loss, normal crashes, etc.
+Restart=always
+RestartSec=3
+
+# Give the process 10 s to handle SIGTERM gracefully before SIGKILL.
+TimeoutStopSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=parking-client
+
+[Install]
+WantedBy=multi-user.target
