@@ -63,6 +63,7 @@ set(SOURCES
     src/app/Config.cpp
     src/app/DeviceId.cpp
     src/app/Logger.cpp
+    src/app/LocalBridge.cpp
     src/app/NetworkInit.cpp
 
     # mqtt
