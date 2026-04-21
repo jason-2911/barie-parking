@@ -1,0 +1,80 @@
+{
+  "device": {
+    "id": "opi4_a1b2c3d4",
+    "id_prefix": "pk_",
+    "auto_id": true,
+    "description": "Tầng B1 - Làn ra",
+    "has_cash_reader": true,
+    "has_display": true,
+    "has_audio": false
+  },
+  "vehicle_sensor": {
+    "enabled": true,
+    "chip_path": "/dev/gpiochip0",
+    "line_offset": 17,
+    "active_low": true,
+    "bias_pull_up": true,
+    "debounce_us": 20000,
+    "clear_delay_ms": 1200
+  },
+  "mqtt": {
+    "host": "localhost",
+    "port": 1883,
+    "username": "parking",
+    "password": "parking123",
+    "keepalive_seconds": 60,
+    "ping_interval_min_seconds": 10,
+    "ping_interval_max_seconds": 15
+  },
+  "barriers": [
+    {
+      "id": "01",
+      "direction": "exit",
+      "modbus_addr": 1,
+      "description": "Cần B1 - Ra",
+      "auto_close_seconds": 6
+    }
+  ],
+  "serial": {
+    "barrier_port": "/dev/ttyUSB0",
+    "barrier_baud": 9600,
+    "nv9_port": "/dev/ttyUSB1"
+  },
+  "audio": {
+    "sound_dir": "resources/sounds",
+    "volume": 90,
+    "sounds": {
+      "open_entry": "open_entry.wav",
+      "open_exit": "open_exit.wav",
+      "payment_success": "payment_success.wav",
+      "monthly_valid": "monthly_valid.wav",
+      "insert_money": "insert_money.wav",
+      "thank_you": "thank_you.wav",
+      "error": "error.wav"
+    }
+  },
+  "ui": {
+    "fullscreen": true,
+    "width": 1920,
+    "height": 1080,
+    "payment_timeout_seconds": 8,
+    "payment_success_countdown_seconds": 5,
+    "style": "dark"
+  },
+  "self_test": {
+    "enabled": true,
+    "auto_vehicle_sensor": true,
+    "vehicle_present_delay_ms": 1000,
+    "vehicle_clear_delay_ms": 2200,
+    "auto_cash_insert_delay_ms": 1500,
+    "auto_call_support": true,
+    "auto_call_support_delay_ms": 1000,
+    "allow_short_payment_timeout": true
+  },
+  "logging": {
+    "path": "/tmp/parking-selftest.log",
+    "max_size_mb": 10,
+    "max_archives": 5,
+    "also_stderr": true
+  }
+}
