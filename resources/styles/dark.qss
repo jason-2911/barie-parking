@@ -1,0 +1,15 @@
+/* dark.qss — override if needed, main styles are inline in code */
+QScrollBar:vertical {
+    background: #0a0e14;
+    width: 6px;
+}
+QScrollBar::handle:vertical {
+    background: #1e2a3a;
+    border-radius: 3px;
+}
+QToolTip {
+    background: #111722;
+    color: #e8f0f8;
+    border: 1px solid #1e2a3a;
+    font-size: 13px;
+}
