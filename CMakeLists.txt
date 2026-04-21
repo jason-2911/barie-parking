@@ -117,6 +117,26 @@ if(NOT APPLE)
     target_link_libraries(parking_client PRIVATE ${GPIOD_LIB})
 endif()
 
+# ── Self-test binary ──────────────────────────────────────────────────────
+# Exercises LocalBridge + Config + MessageFilter + Modbus bit layout end-to-
+# end with a mock barrier driver. No real MQTT / serial / UI — runs in CI
+# and on a laptop in ~50 ms.
+add_executable(parking_selftest
+    tests/parking_selftest.cpp
+    src/app/Config.cpp
+    src/app/LocalBridge.cpp
+    src/types/MessageTypes.h
+)
+target_include_directories(parking_selftest PRIVATE
+    src tests
+    ${MOSQUITTO_INC}
+    "${BREW_CJSON}/include")
+target_link_libraries(parking_selftest PRIVATE
+    Qt6::Core
+    ${MOSQUITTO_LIB})
+target_compile_options(parking_selftest PRIVATE
+    -Wall -Wextra -Wno-unused-parameter)
+
 add_executable(parking_test_server
     server_cpp/main.cpp)
 target_include_directories(parking_test_server PRIVATE
