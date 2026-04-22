@@ -376,6 +376,54 @@ void testFullWifiProvisioningFlow() {
     CHECK(reloaded.barriers[1].direction == BarrierDirection::Exit);
 }
 
+void testOpenReasonDirectionGuard() {
+    section("OpenCommand — reason vs barrier direction");
+
+    // The Application layer rejects open_cmd when the reason's implied
+    // direction conflicts with the targeted barrier's direction. This
+    // exercises the pure helper that drives that decision.
+
+    // Exit-side reasons.
+    CHECK(openReasonImpliesDirection(OpenReason::PaymentConfirmed) == BarrierDirection::Exit);
+    CHECK(openReasonImpliesDirection(OpenReason::MonthlyTicket)    == BarrierDirection::Exit);
+    CHECK(openReasonImpliesDirection(OpenReason::FreeExit)         == BarrierDirection::Exit);
+
+    // Entry-side reasons.
+    CHECK(openReasonImpliesDirection(OpenReason::VehicleEntry)     == BarrierDirection::Entry);
+    CHECK(openReasonImpliesDirection(OpenReason::EntryAuthorized)  == BarrierDirection::Entry);
+
+    // Direction-neutral / always allowed.
+    CHECK(openReasonImpliesDirection(OpenReason::ManualOverride)   == BarrierDirection::Unknown);
+
+    // Unknown reason — handled as "refuse outright" by Application.
+    CHECK(openReasonImpliesDirection(OpenReason::Unknown)          == BarrierDirection::Unknown);
+
+    // Simulate the Application::handleOpenCommand decision for a few combos.
+    auto allowed = [](OpenReason r, BarrierDirection bdir) {
+        if (r == OpenReason::Unknown) return false;       // hard refuse
+        auto implied = openReasonImpliesDirection(r);
+        return implied == BarrierDirection::Unknown || implied == bdir;
+    };
+
+    // Exit barrier accepts payment / monthly / free / manual / unknown(reject).
+    CHECK( allowed(OpenReason::PaymentConfirmed, BarrierDirection::Exit));
+    CHECK( allowed(OpenReason::MonthlyTicket,    BarrierDirection::Exit));
+    CHECK( allowed(OpenReason::FreeExit,         BarrierDirection::Exit));
+    CHECK( allowed(OpenReason::ManualOverride,   BarrierDirection::Exit));
+    CHECK(!allowed(OpenReason::VehicleEntry,     BarrierDirection::Exit));   // ← this is the bug fix
+    CHECK(!allowed(OpenReason::EntryAuthorized,  BarrierDirection::Exit));
+    CHECK(!allowed(OpenReason::Unknown,          BarrierDirection::Exit));
+
+    // Entry barrier mirrors: refuses anything exit-flavoured.
+    CHECK( allowed(OpenReason::VehicleEntry,     BarrierDirection::Entry));
+    CHECK( allowed(OpenReason::EntryAuthorized,  BarrierDirection::Entry));
+    CHECK( allowed(OpenReason::ManualOverride,   BarrierDirection::Entry));
+    CHECK(!allowed(OpenReason::PaymentConfirmed, BarrierDirection::Entry));
+    CHECK(!allowed(OpenReason::MonthlyTicket,    BarrierDirection::Entry));
+    CHECK(!allowed(OpenReason::FreeExit,         BarrierDirection::Entry));
+    CHECK(!allowed(OpenReason::Unknown,          BarrierDirection::Entry));
+}
+
 void testForeignMessagesDoNotCrash() {
     section("Safety — foreign messages per mode never dispatch");
 
@@ -412,6 +460,7 @@ int main(int argc, char* argv[]) {
     testCrc16VendorVectors();
     testStatusBitsMatchDoc();
     testMessageFilter();
+    testOpenReasonDirectionGuard();
     testForeignMessagesDoNotCrash();
     testBridgeActionsForMode(DeviceType::EntryOnly, "entry_only");
     testBridgeActionsForMode(DeviceType::ExitOnly,  "exit_only");

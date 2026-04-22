@@ -1,0 +1,78 @@
+{
+  "_comment": "Bench-test profile: cảm biến E18-D80NK thật trên GPIO4_C5, barrier mock (chỉ log), không NV9. Dùng để verify flow trên Orange Pi khi chưa có cần barrier vật lý.",
+
+  "device": {
+    "id_prefix": "pk_",
+    "auto_id": true,
+    "description": "Bench-test (sensor real, barrier mock)",
+    "type": "exit_only",
+    "has_cash_reader": false,
+    "has_display": true,
+    "has_audio": true
+  },
+
+  "vehicle_sensor": {
+    "enabled": true,
+    "chip_path": "/dev/gpiochip4",
+    "line_offset": 21,
+    "active_low": true,
+    "bias_pull_up": true,
+    "debounce_us": 20000,
+    "clear_delay_ms": 1500
+  },
+
+  "mqtt": {
+    "host": "localhost",
+    "port": 1883,
+    "username": "parking",
+    "password": "parking123",
+    "keepalive_seconds": 10
+  },
+
+  "barriers": [
+    {
+      "id": "01",
+      "direction": "exit",
+      "modbus_addr": 1,
+      "description": "Cần ảo (mock)",
+      "auto_close_seconds": 30
+    }
+  ],
+
+  "serial": {
+    "barrier_port": "/dev/null",
+    "barrier_baud": 9600,
+    "nv9_port": "/dev/null",
+    "barrier_mock": true
+  },
+
+  "audio": {
+    "sound_dir": "resources/sounds",
+    "volume": 70,
+    "sounds": {
+      "open_entry": "open_entry.wav",
+      "open_exit": "open_exit.wav",
+      "payment_success": "payment_success.wav",
+      "monthly_valid": "monthly_valid.wav",
+      "insert_money": "insert_money.wav",
+      "thank_you": "thank_you.wav",
+      "error": "error.wav"
+    }
+  },
+
+  "ui": {
+    "fullscreen": true,
+    "width": 1920,
+    "height": 1080,
+    "payment_timeout_seconds": 300,
+    "payment_success_countdown_seconds": 8,
+    "style": "dark"
+  },
+
+  "logging": {
+    "path": "/tmp/parking-demo.log",
+    "max_size_mb": 10,
+    "max_archives": 3,
+    "also_stderr": true
+  }
+}

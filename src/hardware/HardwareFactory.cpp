@@ -1,12 +1,18 @@
 #include "hardware/HardwareFactory.h"
 #include "hardware/drivers/BarrierControllerModbus.h"
+#include "hardware/drivers/BarrierControllerStub.h"
 #include "hardware/drivers/NV9ValidatorSSP.h"
 #include "hardware/drivers/VehicleSensorGpiod.h"
 
+#include <QDebug>
+
 std::unique_ptr<IBarrierController>
 HardwareFactory::createBarrier(const Config& cfg) {
-    // Only one driver type today; extend with a switch when new
-    // transport types (CAN, TCP/IP, etc.) are added.
+    // Bench-test profile: cảm biến + UI thật, nhưng không có barrier vật lý.
+    if (cfg.serial.barrier_mock) {
+        qInfo() << "[HW] serial.barrier_mock=true → using BarrierControllerStub";
+        return std::make_unique<BarrierControllerStub>();
+    }
     return std::make_unique<BarrierControllerModbus>(
         cfg.serial.barrier_port, cfg.serial.barrier_baud);
 }

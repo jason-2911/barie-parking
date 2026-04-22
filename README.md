@@ -69,7 +69,7 @@ Nếu `open_cmd` đến khi barrier FSM đang ở trạng thái `Lowering`, stat
 
 ### Server restart → reconnect broadcast
 
-Khi server (khởi động lại), server publish tin nhắn `reconnect` trên `parking/v1/{loc}/broadcast/cmd`. Mọi thiết bị đăng ký topic đó sẽ phản hồi bằng cách publish lại payload `connect` của mình, giúp server xây dựng lại state mà không cần chờ chu kỳ ping tiếp theo.
+Khi server (khởi động lại), server publish tin nhắn `reconnect` trên `parking/v1/{loc}/broadcast/cmd`. Mọi thiết bị đăng ký topic đó sẽ phản hồi bằng cách publish lại payload `connect` của mình, giúp server xây dựng lại state ngay lập tức thay vì phải đợi LWT timeout phát hiện thiết bị offline.
 
 ## Khởi động nhanh trên macOS
 
@@ -153,8 +153,10 @@ Trên Linux các class driver biên dịch với I/O serial termios/select thậ
 | `device.id` | ID thiết bị duy nhất (bị ghi đè khi khởi động nếu `auto_id: true`) |
 | `device.auto_id` | `true` → tự nhận diện `/etc/machine-id` (Linux) hoặc `IOPlatformUUID` (macOS) |
 | `device.id_prefix` | Tiền tố gắn vào ID tự nhận diện (ví dụ `"pk-"`) |
+| `device.type` | `entry_only` / `exit_only` / `full` — lái conditional init (xem phần Device Profiles) |
 | `mqtt.host` / `mqtt.port` | Địa chỉ broker (`localhost` cho demo) |
-| `barriers[].direction` | `entry` hoặc `exit` |
+| `mqtt.keepalive_seconds` | Tần suất `PINGREQ` của MQTT (mặc định **10s**). LWT fire sau ~1.5× giá trị này khi mất kết nối |
+| `barriers[].direction` | `entry` hoặc `exit` — còn là role trong profile `full` |
 | `barriers[].modbus_addr` | Địa chỉ Modbus slave của controller barrier |
 | `barriers[].auto_close_seconds` | Fallback an toàn nếu cảm biến xe không kích hoạt |
 | `serial.*_port` | `/dev/ttyUSB*` trên Linux; bỏ qua trên macOS (stub) |
@@ -201,8 +203,7 @@ parking/v1/broadcast/cmd           ← server broadcast, mọi thiết bị subs
 | Topic | QoS | Retain | Ghi chú |
 |---|---|---|---|
 | `parking/v1/client/{dev}/connect`    | 1 | ✓ | Retain để server vừa khởi động thấy thiết bị ngay |
-| `parking/v1/client/{dev}/disconnect` | 1 | — | Graceful shutdown + LWT |
-| `parking/v1/client/{dev}/ping`       | 0 | — | Keepalive + thống kê phần cứng |
+| `parking/v1/client/{dev}/disconnect` | 1 | ✓ | Graceful shutdown **và** LWT (xem phần Presence) |
 | `parking/v1/client/{dev}/payment`    | 1 | — | Thiết bị báo đã thu đủ tiền mặt, yêu cầu server xác nhận |
 | `parking/v1/client/{dev}/event`      | 1 | — | Sự kiện bất thường: `session_abandoned`, `support_request` |
 | `parking/v1/server/{dev}/cmd`        | 1 | — | Lệnh từ server xuống thiết bị |
@@ -235,10 +236,21 @@ parking/v1/broadcast/cmd           ← server broadcast, mọi thiết bị subs
 
 ---
 
-#### `disconnect` — thiết bị offline
+#### `disconnect` — thiết bị offline (hai lối)
 
-**Topic:** `parking/v1/client/{dev}/disconnect`  
-**Khi nào:** tắt graceful; broker tự gửi LWT nếu mất kết nối đột ngột.
+**Topic:** `parking/v1/client/{dev}/disconnect` (retain=true, QoS 1)
+
+Cùng một topic phục vụ **hai** kịch bản — phân biệt qua field `reason`:
+
+- `reason: "graceful"` — thiết bị publish ngay trước khi `mosquitto_disconnect()`
+  (systemd stop, OTA, reboot có chủ đích).
+- `reason: "lwt"` — **broker tự publish** nếu thiết bị không gửi `DISCONNECT`
+  và cũng không trả lời `PINGREQ` trong khoảng `1.5 × keepalive_seconds`.
+  Với `keepalive_seconds = 10`, server phát hiện thiết bị chết trong **≤15 s**.
+
+Không có ping telemetry tầng ứng dụng — presence hoàn toàn dựa vào MQTT
+keepalive + LWT. Nếu cần thống kê CPU/RAM/nhiệt độ gửi định kỳ, thêm kênh
+riêng ở phiên bản sau.
 
 ```json
 {
@@ -249,26 +261,8 @@ parking/v1/broadcast/cmd           ← server broadcast, mọi thiết bị subs
 }
 ```
 
----
-
-#### `ping` — keepalive định kỳ
-
-**Topic:** `parking/v1/client/{dev}/ping`  
-**Khi nào:** ngẫu nhiên trong `[ping_interval_min, ping_interval_max]` giây.
-
-```json
-{
-  "type": "ping",
-  "device_id": "pk_abc123def456789a",
-  "timestamp": "2026-04-20T10:30:00",
-  "uptime_seconds": 9000,
-  "barriers": [
-    { "barrier_id": "pk_abc123def456789a_01", "direction": "exit", "status": "online", "position": "down" }
-  ],
-  "cpu_temp_c": 52,
-  "free_mem_mb": 2800
-}
-```
+Server nên xử lý `reason == "lwt"` như crash / mất điện — mark thiết bị
+offline, release session đang treo, gửi cảnh báo cho ops.
 
 ---
 

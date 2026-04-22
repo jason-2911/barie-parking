@@ -81,6 +81,7 @@ set(SOURCES
 
     # hardware drivers (real on Linux / stubbed on __APPLE__)
     src/hardware/drivers/BarrierControllerModbus.cpp
+    src/hardware/drivers/BarrierControllerStub.cpp
     src/hardware/drivers/NV9ValidatorSSP.cpp
     src/hardware/drivers/VehicleSensorGpiod.cpp
 
@@ -135,6 +136,24 @@ target_link_libraries(parking_selftest PRIVATE
     Qt6::Core
     ${MOSQUITTO_LIB})
 target_compile_options(parking_selftest PRIVATE
+    -Wall -Wextra -Wno-unused-parameter)
+
+# ── Sensor bring-up probe ────────────────────────────────────────────────
+# Tiny CLI that opens the same VehicleSensorGpiod used by parking_client
+# and prints 1/0 on every edge — wave a hand in front of the IR sensor to
+# verify the wiring before deploying the full app.
+add_executable(sensor_probe
+    tests/sensor_probe.cpp
+    src/hardware/drivers/VehicleSensorGpiod.cpp
+)
+target_include_directories(sensor_probe PRIVATE src)
+# Driver pulls in QDebug for logging — link Qt6::Core to satisfy it.
+target_link_libraries(sensor_probe PRIVATE Qt6::Core pthread)
+if(NOT APPLE)
+    target_include_directories(sensor_probe PRIVATE ${GPIOD_INC})
+    target_link_libraries   (sensor_probe PRIVATE ${GPIOD_LIB})
+endif()
+target_compile_options(sensor_probe PRIVATE
     -Wall -Wextra -Wno-unused-parameter)
 
 add_executable(parking_test_server

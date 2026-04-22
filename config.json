@@ -23,9 +23,7 @@
     "port": 1883,
     "username": "parking",
     "password": "parking123",
-    "keepalive_seconds": 60,
-    "ping_interval_min_seconds": 30,
-    "ping_interval_max_seconds": 60
+    "keepalive_seconds": 10
   },
   "barriers": [
     {
