@@ -6,7 +6,6 @@
 #include <mosquitto.h>
 
 #include <QDebug>
-#include <QRandomGenerator>
 #include <QMetaObject>
 
 namespace {
@@ -32,7 +31,11 @@ MqttClient::MqttClient(const Config& cfg, QObject* parent)
         cfg_.mqtt.username.toUtf8().constData(),
         cfg_.mqtt.password.toUtf8().constData());
 
-    // Last-will: server learns about ungraceful drop
+    // Last-will: broker re-publishes this (retained) if we drop the TCP
+    // connection without a clean DISCONNECT. With keepalive_seconds=10 the
+    // broker declares the device dead ~1.5 × keepalive after the last PING
+    // reply, so the server sees an "lwt" disconnect inside ~15 s of a
+    // real crash/power-loss — no periodic app-level ping needed.
     will_payload_ = MqttMessageBuilder::buildDisconnect(cfg_, "lwt");
     const QByteArray will_topic =
         mqtt_topics::disconnect(cfg_.device.id).toUtf8();
@@ -43,10 +46,6 @@ MqttClient::MqttClient(const Config& cfg, QObject* parent)
     mosquitto_connect_callback_set(mosq_, &MqttClient::cbConnect);
     mosquitto_disconnect_callback_set(mosq_, &MqttClient::cbDisconnect);
     mosquitto_message_callback_set(mosq_, &MqttClient::cbMessage);
-
-    ping_timer_ = new QTimer(this);
-    ping_timer_->setSingleShot(true);
-    connect(ping_timer_, &QTimer::timeout, this, &MqttClient::onPingTimer);
 }
 
 MqttClient::~MqttClient() {
@@ -80,7 +79,6 @@ void MqttClient::connectToServer() {
 
 void MqttClient::disconnectGraceful() {
     if (!mosq_) return;
-    if (ping_timer_) ping_timer_->stop();
     if (connected_.load()) {
         QByteArray payload = MqttMessageBuilder::buildDisconnect(cfg_, "graceful");
         const QByteArray topic = mqtt_topics::disconnect(cfg_.device.id).toUtf8();
@@ -126,7 +124,6 @@ void MqttClient::handleConnect(int rc) {
         connected_.store(true);
         subscribe();
         publishConnect();
-        schedulePing();
         emit connected();
     } else {
         qCritical() << "[MQTT] connection refused, code=" << rc
@@ -138,7 +135,6 @@ void MqttClient::handleConnect(int rc) {
 void MqttClient::handleDisconnect(int rc) {
     qWarning() << "[MQTT] disconnected (rc=" << rc << ")";
     connected_.store(false);
-    if (ping_timer_) ping_timer_->stop();
     emit disconnected();
 }
 
@@ -152,7 +148,7 @@ void MqttClient::handleInbound(QByteArray topic, QByteArray payload) {
                    << payload.left(200);
 }
 
-// ── Subscription / keep-alive ───────────────────────────────────────────────
+// ── Subscription ────────────────────────────────────────────────────────────
 
 void MqttClient::subscribe() {
     // Per-device command channel.
@@ -173,20 +169,6 @@ void MqttClient::subscribe() {
         qInfo() << "[MQTT] subscribed to" << bcast_topic;
 }
 
-void MqttClient::schedulePing() {
-    int min_ms = cfg_.mqtt.ping_interval_min_seconds * 1000;
-    int max_ms = cfg_.mqtt.ping_interval_max_seconds * 1000;
-    int interval = QRandomGenerator::global()->bounded(min_ms, max_ms);
-    ping_timer_->setSingleShot(true);
-    ping_timer_->start(interval);
-}
-
-void MqttClient::onPingTimer() {
-    // Application gathers fresh data and calls publishPing()
-    emit pingRequested();
-    schedulePing();
-}
-
 // ── Publishers ──────────────────────────────────────────────────────────────
 
 void MqttClient::publishConnect() {
@@ -196,16 +178,6 @@ void MqttClient::publishConnect() {
     mosquitto_publish(mosq_, nullptr, topic.constData(),
                        payload.size(), payload.constData(), 1, true);
     qInfo() << "[MQTT] TX connect";
-}
-
-void MqttClient::publishPing(const QVector<PingMessage::BarrierPingInfo>& barriers,
-                              qint64 uptime, int cpu_temp, int free_mem) {
-    if (!mosq_ || !connected_.load()) return;
-    QByteArray payload = MqttMessageBuilder::buildPing(
-        cfg_, barriers, uptime, cpu_temp, free_mem);
-    QByteArray topic = mqtt_topics::ping(cfg_.device.id).toUtf8();
-    mosquitto_publish(mosq_, nullptr, topic.constData(),
-                       payload.size(), payload.constData(), 0, false);
 }
 
 void MqttClient::publishPayment(const PaymentMessage& msg) {

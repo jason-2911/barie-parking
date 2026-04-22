@@ -13,12 +13,10 @@
 class MqttMessageBuilder {
 public:
     static QByteArray buildConnect(const Config& cfg);
+    // Re-used by the LWT hook (reason="lwt") and the graceful-shutdown path
+    // (reason="graceful") — server uses `reason` to distinguish a crash from
+    // an orderly service stop.
     static QByteArray buildDisconnect(const Config& cfg, const QString& reason);
-    static QByteArray buildPing(const Config& cfg,
-                                 const QVector<PingMessage::BarrierPingInfo>& barriers,
-                                 qint64 uptime_seconds,
-                                 int cpu_temp_c,
-                                 int free_mem_mb);
     static QByteArray buildPayment(const PaymentMessage& msg);
 
     // Emitted when the user walked away / didn't finish payment in time.

@@ -13,7 +13,6 @@ namespace mqtt_topics {
 // Device → Server  ("client" segment = device is the publisher)
 inline QString connect   (const QString& dev) { return "parking/v1/client/" + dev + "/connect"; }
 inline QString disconnect(const QString& dev) { return "parking/v1/client/" + dev + "/disconnect"; }
-inline QString ping      (const QString& dev) { return "parking/v1/client/" + dev + "/ping"; }
 inline QString payment   (const QString& dev, const QString& barrier_id) {
     return "parking/v1/client/" + dev + "/payment/" + barrier_id;
 }

@@ -36,8 +36,6 @@ public:
 
     // Outbound
     void publishConnect();
-    void publishPing(const QVector<PingMessage::BarrierPingInfo>& barriers,
-                     qint64 uptime_sec, int cpu_temp, int free_mem_mb);
     void publishPayment(const PaymentMessage& msg);
     void publishSessionAbandoned(const QString& session_id,
                                    const QString& barrier_id,
@@ -54,10 +52,6 @@ signals:
     void disconnected();
     void connectionError(const QString& reason);
     void inboundMessage(const InboundMessage& msg);
-    void pingRequested();
-
-private slots:
-    void onPingTimer();
 
 private:
     // libmosquitto C callbacks → bounce into methods below
@@ -71,11 +65,12 @@ private:
     Q_INVOKABLE void handleInbound(QByteArray topic, QByteArray payload);
 
     void subscribe();
-    void schedulePing();
 
     const Config&      cfg_;
     mosquitto*         mosq_ = nullptr;
-    QTimer*            ping_timer_ = nullptr;
     std::atomic<bool>  connected_{false};
-    QByteArray         will_payload_;  // must outlive mosquitto_will_set
+    // Held for the lifetime of the client because mosquitto_will_set only
+    // stores a pointer to the payload — the broker re-publishes it verbatim
+    // if we drop off the bus ungracefully.
+    QByteArray         will_payload_;
 };

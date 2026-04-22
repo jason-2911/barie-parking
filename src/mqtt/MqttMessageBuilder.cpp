@@ -43,36 +43,6 @@ QByteArray MqttMessageBuilder::buildDisconnect(const Config& cfg,
     return QJsonDocument(root).toJson(QJsonDocument::Compact);
 }
 
-QByteArray MqttMessageBuilder::buildPing(
-    const Config& cfg,
-    const QVector<PingMessage::BarrierPingInfo>& barriers,
-    qint64 uptime_seconds, int cpu_temp_c, int free_mem_mb) {
-
-    QJsonArray barr_arr;
-    for (const auto& b : barriers) {
-        QJsonObject o;
-        o["barrier_id"] = b.id;
-        o["direction"]  = directionStr(b.direction);
-        o["status"]     = b.status;
-        o["position"]   = b.position;
-        barr_arr.append(o);
-    }
-
-    QJsonObject sys;
-    sys["cpu_temp_c"]     = cpu_temp_c;
-    sys["free_mem_mb"]    = free_mem_mb;
-    sys["cash_reader_ok"] = true;
-
-    QJsonObject root;
-    root["type"]           = "ping";
-    root["device_id"]      = cfg.device.id;
-    root["timestamp"]      = QDateTime::currentDateTime().toString(Qt::ISODate);
-    root["uptime_seconds"] = uptime_seconds;
-    root["barriers"]       = barr_arr;
-    root["system"]         = sys;
-    return QJsonDocument(root).toJson(QJsonDocument::Compact);
-}
-
 QByteArray MqttMessageBuilder::buildPayment(const PaymentMessage& msg) {
     QJsonObject root;
     root["type"]          = "payment";
