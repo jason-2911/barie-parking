@@ -56,7 +56,6 @@ Application::Application(Config& cfg,
     connect(mqtt_, &MqttClient::disconnected,    this, &Application::onMqttDisconnected);
     connect(mqtt_, &MqttClient::connectionError, this, &Application::onMqttError);
     connect(mqtt_, &MqttClient::inboundMessage,  this, &Application::onInboundMessage);
-    connect(mqtt_, &MqttClient::pingRequested,   this, &Application::onPingTimerFired);
 
     // Command queue → App (handles dequeued commands in order)
     connect(cmd_queue_, &CommandQueue::commandReady,
@@ -288,7 +287,36 @@ void Application::handleVehicleInfo(const VehicleInfo& vi) {
 
 void Application::handleOpenCommand(const OpenCommand& cmd) {
     qInfo() << "[App] OpenCommand: barrier=" << cmd.barrier_id
-            << "reason=" << static_cast<int>(cmd.reason);
+            << "reason=" << openReasonStr(cmd.reason);
+
+    // ── Validate barrier_id is wired to this device.
+    const auto* bc = cfg_.findBarrier(cmd.barrier_id);
+    if (!bc) {
+        qWarning() << "[App] reject open_cmd: barrier" << cmd.barrier_id
+                   << "not in this device's config";
+        return;
+    }
+
+    // ── Refuse unknown reasons outright. Forces server to use one of the
+    //    enum values; otherwise a misrouted/garbled payload could open a
+    //    gate at the wrong time.
+    if (cmd.reason == OpenReason::Unknown) {
+        qWarning() << "[App] reject open_cmd: unknown reason on barrier"
+                   << cmd.barrier_id;
+        return;
+    }
+
+    // ── Refuse if the reason implies a direction that doesn't match the
+    //    barrier's role. ManualOverride is direction-neutral and always
+    //    allowed (guard / dashboard physically forced the gate).
+    const BarrierDirection implied = openReasonImpliesDirection(cmd.reason);
+    if (implied != BarrierDirection::Unknown && implied != bc->direction) {
+        qWarning() << "[App] reject open_cmd:" << openReasonStr(cmd.reason)
+                   << "implies" << directionStr(implied)
+                   << "but barrier" << cmd.barrier_id
+                   << "is" << directionStr(bc->direction);
+        return;
+    }
 
     CommandQueue::Command c;
     c.kind           = CommandQueue::Kind::Open;
@@ -586,19 +614,4 @@ void Application::onDisplayDisconnected() {
     // Hide (not close) so backend keeps running and the window object stays
     // valid. No signals, no session teardown — everything continues normally.
     window_->hide();
-}
-
-void Application::onPingTimerFired() {
-    QVector<PingMessage::BarrierPingInfo> info;
-    for (const auto& bc : cfg_.barriers) {
-        PingMessage::BarrierPingInfo pi;
-        pi.id        = bc.id;
-        pi.direction = bc.direction;
-        pi.status    = barrier_->isOnline(bc.id) ? "online" : "offline";
-        pi.position  = barrier_->position(bc.id);
-        info.append(pi);
-    }
-
-    qint64 uptime = uptime_.elapsed() / 1000;
-    mqtt_->publishPing(info, uptime, 50, 2800);
 }

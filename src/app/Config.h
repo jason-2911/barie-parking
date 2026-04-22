@@ -48,15 +48,22 @@ struct Config {
         int     port = 1883;
         QString username;
         QString password;
-        int     keepalive_seconds = 60;
-        int     ping_interval_min_seconds = 60;
-        int     ping_interval_max_seconds = 120;
+        // MQTT keepalive + broker-side LWT replace the old app-level ping.
+        // Broker declares the client dead ~1.5 × keepalive after the last
+        // reply, so 10s ⇒ ≤15s detection latency. Raise this on lossy/
+        // metered links to trade latency for bandwidth.
+        int     keepalive_seconds = 10;
     } mqtt;
 
     struct Serial {
         QString barrier_port = "/dev/ttyUSB0";
         int     barrier_baud = 9600;
         QString nv9_port     = "/dev/ttyUSB1";
+        // When true, HardwareFactory swaps the real Modbus driver for an
+        // in-memory stub that only logs commands. Lets you run the full
+        // app + UI on a board that has the cảm biến wired but no barrier
+        // controller plugged in yet.
+        bool    barrier_mock = false;
     } serial;
 
     struct Audio {

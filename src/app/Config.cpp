@@ -55,15 +55,14 @@ bool Config::load(const QString& path) {
     mqtt.port             = m["port"].toInt(1883);
     mqtt.username         = m["username"].toString();
     mqtt.password         = m["password"].toString();
-    mqtt.keepalive_seconds= m["keepalive_seconds"].toInt(60);
-    mqtt.ping_interval_min_seconds = m["ping_interval_min_seconds"].toInt(60);
-    mqtt.ping_interval_max_seconds = m["ping_interval_max_seconds"].toInt(120);
+    mqtt.keepalive_seconds= m["keepalive_seconds"].toInt(10);
 
     // serial
     auto s = root["serial"].toObject();
     serial.barrier_port = s["barrier_port"].toString("/dev/ttyUSB0");
     serial.barrier_baud = s["barrier_baud"].toInt(9600);
     serial.nv9_port     = s["nv9_port"].toString("/dev/ttyUSB1");
+    serial.barrier_mock = s["barrier_mock"].toBool(false);
 
     // audio
     auto a = root["audio"].toObject();

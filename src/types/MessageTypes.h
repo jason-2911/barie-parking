@@ -21,10 +21,16 @@ enum class TicketType       { Hourly, Monthly, Free, Unknown };
 enum class DeviceType       { EntryOnly, ExitOnly, Full, Unknown };
 enum class PaymentMethod    { Cash, QR, NFC, Unknown };
 enum class OpenReason       {
-    PaymentConfirmed,
-    MonthlyTicket,
+    // Exit-side: triggered by something the user did at the kiosk.
+    PaymentConfirmed,   // hourly ticket, cash/QR payment cleared
+    MonthlyTicket,      // valid monthly subscription
+    FreeExit,           // operator-declared free pass window
+    // Entry-side: triggered by the inbound lane / camera / ANPR.
+    VehicleEntry,       // any plate detected at the entry lane
+    EntryAuthorized,    // pre-paid / whitelisted plate authorized by server
+    // Direction-neutral: a guard / dashboard physically forced the gate.
     ManualOverride,
-    FreeExit,
+    // Anything we don't recognize — handler must refuse to open.
     Unknown
 };
 
@@ -53,23 +59,10 @@ struct DisconnectMessage {
     QDateTime timestamp;
 };
 
-struct PingMessage {
-    QString   device_id;
-    QDateTime timestamp;
-    qint64    uptime_seconds = 0;
-
-    struct BarrierPingInfo {
-        QString id;
-        BarrierDirection direction;
-        QString status;    // "online" | "offline" | "fault"
-        QString position;  // "up" | "down" | "unknown"
-    };
-    QVector<BarrierPingInfo> barriers;
-
-    int    cpu_temp_c    = 0;
-    int    free_mem_mb   = 0;
-    bool   cash_reader_ok = true;
-};
+// (No application-level ping. Presence is MQTT-native now: PINGREQ frames
+// every `keepalive_seconds` keep the TCP session alive, and a retained LWT
+// on parking/v1/client/<id>/disconnect fires within ~1.5 × keepalive after
+// an ungraceful drop.)
 
 struct PaymentMessage {
     QString       device_id;
@@ -213,6 +206,36 @@ inline DeviceType deviceTypeFromStr(const QString& s) {
     if (s == "exit_only")  return DeviceType::ExitOnly;
     if (s == "full")       return DeviceType::Full;
     return DeviceType::Unknown;
+}
+
+inline QString openReasonStr(OpenReason r) {
+    switch (r) {
+        case OpenReason::PaymentConfirmed: return "payment_confirmed";
+        case OpenReason::MonthlyTicket:    return "monthly_ticket";
+        case OpenReason::FreeExit:         return "free_exit";
+        case OpenReason::VehicleEntry:     return "vehicle_entry";
+        case OpenReason::EntryAuthorized:  return "entry_authorized";
+        case OpenReason::ManualOverride:   return "manual_override";
+        default:                           return "unknown";
+    }
+}
+
+// Direction the reason implies. ManualOverride is direction-neutral —
+// returns Unknown on purpose so the caller treats it as "always allowed".
+inline BarrierDirection openReasonImpliesDirection(OpenReason r) {
+    switch (r) {
+        case OpenReason::PaymentConfirmed:
+        case OpenReason::MonthlyTicket:
+        case OpenReason::FreeExit:
+            return BarrierDirection::Exit;
+        case OpenReason::VehicleEntry:
+        case OpenReason::EntryAuthorized:
+            return BarrierDirection::Entry;
+        case OpenReason::ManualOverride:
+        case OpenReason::Unknown:
+        default:
+            return BarrierDirection::Unknown;
+    }
 }
 
 inline TicketType ticketFromStr(const QString& s) {

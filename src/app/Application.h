@@ -50,9 +50,6 @@ private slots:
     void onCallSupport();
     void onIdleTimeout();
 
-    // Ping
-    void onPingTimerFired();
-
     // Dispatched from CommandQueue once the previous command has ack'd.
     void runCommand(const CommandQueue::Command& cmd);
 

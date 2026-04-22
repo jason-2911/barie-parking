@@ -54,8 +54,11 @@ InboundMessage MqttMessageParser::parse(const QByteArray& json) {
         const QString r = root["reason"].toString();
         if      (r == "payment_confirmed") cmd.reason = OpenReason::PaymentConfirmed;
         else if (r == "monthly_ticket")    cmd.reason = OpenReason::MonthlyTicket;
-        else if (r == "manual_override")   cmd.reason = OpenReason::ManualOverride;
         else if (r == "free_exit")         cmd.reason = OpenReason::FreeExit;
+        else if (r == "vehicle_entry")     cmd.reason = OpenReason::VehicleEntry;
+        else if (r == "entry_authorized")  cmd.reason = OpenReason::EntryAuthorized;
+        else if (r == "manual_override")   cmd.reason = OpenReason::ManualOverride;
+        // anything else → Unknown (default-initialised), refused downstream.
 
         out.open_cmd = cmd;
     }
