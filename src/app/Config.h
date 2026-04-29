@@ -16,6 +16,10 @@ struct BarrierConfig {
     int              modbus_addr = 1;
     QString          description;
     int              auto_close_seconds = 10;
+    // Which speaker the open-chime for this barrier comes out of when the
+    // device shares a single stereo audio jack between two barriers.
+    // Default = system default device (no L/R routing).
+    AudioChannel     audio_channel = AudioChannel::Default;
 };
 
 struct VehicleSensorConfig {
@@ -70,6 +74,14 @@ struct Config {
         QString sound_dir;
         int     volume = 90;
         QMap<QString,QString> sounds;
+
+        // ALSA device names used by the QProcess+aplay backend when routing
+        // sound to a specific speaker. Empty `device_default` means "no -D
+        // flag" → ALSA system default. The L/R defaults match the asoundrc
+        // template shipped with the project.
+        QString device_default;
+        QString device_left  = "parking_left";
+        QString device_right = "parking_right";
 
         QString soundPath(const QString& key) const {
             return sound_dir + "/" + sounds.value(key, key);

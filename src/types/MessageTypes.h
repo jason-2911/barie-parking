@@ -14,6 +14,13 @@
 
 enum class BarrierDirection { Entry, Exit, Unknown };
 enum class TicketType       { Hourly, Monthly, Free, Unknown };
+// AudioChannel: which physical speaker an open-chime is routed to when the
+// device drives more than one barrier on a shared stereo audio jack.
+//   - Default: no routing — falls through to the system default ALSA device
+//              (typical for ExitOnly with a single barrier).
+//   - Left / Right: route via dedicated ALSA virtual devices wired to one
+//              channel of the jack so each barrier gets its own speaker.
+enum class AudioChannel     { Default, Left, Right };
 // DeviceType: controls which subsystems the device brings up.
 //   - EntryOnly: headless, barrier(s) only, server-driven open/close. NV9 + UI skipped.
 //   - ExitOnly:  single exit barrier, NV9 + UI active (current default behaviour).
@@ -206,6 +213,20 @@ inline DeviceType deviceTypeFromStr(const QString& s) {
     if (s == "exit_only")  return DeviceType::ExitOnly;
     if (s == "full")       return DeviceType::Full;
     return DeviceType::Unknown;
+}
+
+inline QString audioChannelStr(AudioChannel c) {
+    switch (c) {
+        case AudioChannel::Left:  return "left";
+        case AudioChannel::Right: return "right";
+        default:                  return "default";
+    }
+}
+
+inline AudioChannel audioChannelFromStr(const QString& s) {
+    if (s == "left")  return AudioChannel::Left;
+    if (s == "right") return AudioChannel::Right;
+    return AudioChannel::Default;
 }
 
 inline QString openReasonStr(OpenReason r) {

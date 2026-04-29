@@ -1,0 +1,23 @@
+pcm.dmixer {
+    type dmix
+    ipc_key 1024
+    slave {
+        pcm "hw:0,0"
+        rate 44100
+        channels 2
+        period_size 1024
+        buffer_size 4096
+    }
+}
+
+pcm.parking_left {
+    type plug
+    slave.pcm "dmixer"
+    ttable.0.0 1.0
+}
+
+pcm.parking_right {
+    type plug
+    slave.pcm "dmixer"
+    ttable.0.1 1.0
+}

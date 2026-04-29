@@ -28,7 +28,7 @@ if(APPLE)
 endif()
 
 # ─── Dependencies ───────────────────────────────────────────────────────────
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network Multimedia)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network)
 
 find_library(QRENCODE_LIB qrencode REQUIRED
     HINTS "${BREW_QRENCODE}/lib")
@@ -110,7 +110,7 @@ if(NOT APPLE)
 endif()
 
 target_link_libraries(parking_client PRIVATE
-    Qt6::Core Qt6::Widgets Qt6::Network Qt6::Multimedia
+    Qt6::Core Qt6::Widgets Qt6::Network
     ${QRENCODE_LIB}
     ${MOSQUITTO_LIB})
 

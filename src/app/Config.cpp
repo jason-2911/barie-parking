@@ -68,6 +68,9 @@ bool Config::load(const QString& path) {
     auto a = root["audio"].toObject();
     audio.sound_dir = a["sound_dir"].toString();
     audio.volume    = a["volume"].toInt(90);
+    audio.device_default = a["device_default"].toString();
+    audio.device_left    = a["device_left"].toString("parking_left");
+    audio.device_right   = a["device_right"].toString("parking_right");
     auto smap = a["sounds"].toObject();
     for (auto it = smap.begin(); it != smap.end(); ++it)
         audio.sounds[it.key()] = it.value().toString();
@@ -132,6 +135,7 @@ bool Config::load(const QString& path) {
         bc.modbus_addr       = bo["modbus_addr"].toInt(1);
         bc.description       = bo["description"].toString();
         bc.auto_close_seconds= bo["auto_close_seconds"].toInt(10);
+        bc.audio_channel     = audioChannelFromStr(bo["audio_channel"].toString());
         barriers.append(bc);
     }
 
@@ -171,6 +175,7 @@ bool Config::save(const QString& path) const {
         o["modbus_addr"]        = b.modbus_addr;
         o["description"]        = b.description;
         o["auto_close_seconds"] = b.auto_close_seconds;
+        o["audio_channel"]      = audioChannelStr(b.audio_channel);
         arr.append(o);
     }
     root["barriers"] = arr;

@@ -411,13 +411,28 @@ void Application::enqueueOpen(const QString& barrier_id, int auto_close_sec,
 
 void Application::runCommand(const CommandQueue::Command& cmd) {
     switch (cmd.kind) {
-        case CommandQueue::Kind::Open:
-            if (cmd.play_sound)
-                audio_->play(cmd.sound_file.isEmpty() ? "open_exit" : cmd.sound_file);
+        case CommandQueue::Kind::Open: {
+            if (cmd.play_sound) {
+                // Pick channel + fallback sound key from the barrier's own
+                // config. Entry barriers default to "open_entry" cue, exit
+                // barriers to "open_exit". For shared-jack dual-barrier
+                // setups each barrier carries its own audio_channel
+                // (left/right) so concurrent opens come out of different
+                // speakers.
+                const auto* bc      = cfg_.findBarrier(cmd.barrier_id);
+                const AudioChannel ch = bc ? bc->audio_channel
+                                           : AudioChannel::Default;
+                const bool entry    = bc && bc->direction == BarrierDirection::Entry;
+                const QString key   = cmd.sound_file.isEmpty()
+                                          ? (entry ? "open_entry" : "open_exit")
+                                          : cmd.sound_file;
+                audio_->play(key, ch);
+            }
             if (window_)
                 window_->showBarrierOpening(cmd.barrier_id, current_plate_);
             barrier_->requestOpen(cmd.barrier_id, cmd.auto_close_sec);
             break;
+        }
 
         case CommandQueue::Kind::Close:
             barrier_->requestClose(cmd.barrier_id);

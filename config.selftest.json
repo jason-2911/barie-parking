@@ -31,7 +31,8 @@
       "direction": "exit",
       "modbus_addr": 1,
       "description": "Cần B1 - Ra",
-      "auto_close_seconds": 6
+      "auto_close_seconds": 6,
+      "audio_channel": "default"
     }
   ],
   "serial": {
@@ -42,6 +43,9 @@
   "audio": {
     "sound_dir": "resources/sounds",
     "volume": 90,
+    "device_default": "",
+    "device_left": "parking_left",
+    "device_right": "parking_right",
     "sounds": {
       "open_entry": "open_entry.wav",
       "open_exit": "open_exit.wav",
