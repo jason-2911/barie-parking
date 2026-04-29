@@ -19,7 +19,7 @@
     "clear_delay_ms": 1200
   },
   "mqtt": {
-    "host": "localhost",
+    "host": "127.0.0.1",
     "port": 1883,
     "username": "parking",
     "password": "parking123",
