@@ -64,17 +64,26 @@ void MqttClient::connectToServer() {
     if (!mosq_) return;
     qInfo().nospace() << "[MQTT] connecting to "
                        << cfg_.mqtt.host << ":" << cfg_.mqtt.port;
-    int rc = mosquitto_connect_async(mosq_,
+
+    mosquitto_loop_start(mosq_);
+    mosquitto_reconnect_delay_set(mosq_,
+                                   /*delay=*/2,
+                                   /*delay_max=*/30,
+                                   /*exp backoff=*/true);
+
+    const int rc = mosquitto_connect_async(mosq_,
         cfg_.mqtt.host.toUtf8().constData(),
         cfg_.mqtt.port,
         cfg_.mqtt.keepalive_seconds);
     if (rc != MOSQ_ERR_SUCCESS) {
-        qCritical() << "[MQTT] connect_async failed:"
-                    << mosquitto_strerror(rc);
+        qWarning() << "[MQTT] connect_async failed:"
+                    << mosquitto_strerror(rc)
+                    << "— loop will retry";
         emit connectionError(QString::fromUtf8(mosquitto_strerror(rc)));
-        return;
+        // Do NOT return: the loop thread keeps retrying via the
+        // reconnect_delay above, so the device recovers as soon as the
+        // broker comes online.
     }
-    mosquitto_loop_start(mosq_);
 }
 
 void MqttClient::disconnectGraceful() {
