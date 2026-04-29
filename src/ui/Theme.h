@@ -7,6 +7,25 @@
 
 namespace theme {
 
+// ─── v2 kiosk palette (navy header / red+green title bars) ───────────────────
+// New screens (TopBar, TitleBar, Footer, ScreenExitHourly, ScreenPaymentSuccess,
+// ScreenPaymentFailed) use these tokens. Older screens still depend on the
+// neo-brutalist palette below — keep both alive.
+inline constexpr auto V2_BG_PAGE      = "#F4F4F6";  // body / footer bg
+inline constexpr auto V2_HEADER_NAVY  = "#0A0A2C";  // top header
+inline constexpr auto V2_TITLE_RED    = "#E7000B";  // payment / fail title bar
+inline constexpr auto V2_TITLE_GREEN  = "#008F39";  // success title bar
+inline constexpr auto V2_TEXT_DARK    = "#070824";  // headline text
+inline constexpr auto V2_TEXT_LABEL   = "#3D3E58";  // tile labels
+inline constexpr auto V2_TEXT_MUTED   = "#5F6078";  // sub text / footer
+inline constexpr auto V2_TEXT_PLACEHOLDER = "#8E8FA0";
+inline constexpr auto V2_DIVIDER      = "#B8B8C4";
+inline constexpr auto V2_QR_BORDER    = "#A9AAB8";
+inline constexpr auto V2_DANGER       = "#E7000B";
+inline constexpr auto V2_SUCCESS      = "#008F39";
+inline constexpr auto V2_SUCCESS_SOFT = "#E4F7EB";
+inline constexpr auto V2_DANGER_SOFT  = "#FFE5E5";
+
 // ─── Body / panel backgrounds ────────────────────────────────────────────────
 inline constexpr auto BG_BODY        = "#e9e9e9";   // grey page bg
 inline constexpr auto BG_LEFT        = "#fff7ed";   // left panel (orange-50)

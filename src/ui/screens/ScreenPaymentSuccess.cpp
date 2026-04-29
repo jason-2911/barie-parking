@@ -1,233 +1,128 @@
 #include "ui/screens/ScreenPaymentSuccess.h"
-#include "ui/screens/ScreenHelpers.h"
+#include "ui/widgets/TitleBar.h"
 #include "ui/Theme.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QPushButton>
 #include <QTimer>
+#include <QWidget>
+#include <QPainter>
+#include <QGraphicsDropShadowEffect>
 
-using namespace ui;
+namespace {
+
+class CheckBadge : public QWidget {
+public:
+    explicit CheckBadge(QWidget* parent = nullptr) : QWidget(parent) {
+        setFixedSize(130, 130);
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const QRectF r = rect().adjusted(4, 4, -4, -4);
+        p.setBrush(QColor(theme::V2_SUCCESS_SOFT));
+        p.setPen(QPen(QColor(theme::V2_SUCCESS), 8));
+        p.drawEllipse(r);
+
+        QPen check(QColor(theme::V2_SUCCESS), 10, Qt::SolidLine,
+                    Qt::RoundCap, Qt::RoundJoin);
+        p.setPen(check);
+        p.setBrush(Qt::NoBrush);
+
+        const QPointF c = rect().center();
+        const qreal s = rect().width();
+        const QPointF p1(c.x() - s * 0.18, c.y() + s * 0.02);
+        const QPointF p2(c.x() - s * 0.04, c.y() + s * 0.16);
+        const QPointF p3(c.x() + s * 0.22, c.y() - s * 0.14);
+        p.drawLine(p1, p2);
+        p.drawLine(p2, p3);
+    }
+};
+
+QGraphicsDropShadowEffect* makeCardShadow(QObject* parent) {
+    auto* eff = new QGraphicsDropShadowEffect(parent);
+    eff->setBlurRadius(28);
+    eff->setOffset(0, 10);
+    eff->setColor(QColor(0, 0, 0, 36));
+    return eff;
+}
+
+} // anonymous namespace
 
 ScreenPaymentSuccess::ScreenPaymentSuccess(QWidget* parent)
     : QWidget(parent)
 {
-    setStyleSheet(QString("background:%1;").arg(theme::BG_BODY));
+    setStyleSheet(QString("background:%1;").arg(theme::V2_BG_PAGE));
 
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
-    // ── Green banner ──────────────────────────────────────────────────
-    {
-        auto* b = new QWidget;
-        b->setFixedHeight(72);
-        b->setStyleSheet(QString("background:%1;").arg(theme::GREEN_HEADER));
-        auto* bh = new QHBoxLayout(b);
-        bh->setContentsMargins(0, 0, 0, 0);
-        auto* l = new QLabel("THANH TOÁN THÀNH CÔNG");
-        l->setAlignment(Qt::AlignCenter);
-        l->setStyleSheet(
-            "color:#ffffff;font-size:38px;font-weight:900;"
-            "background:transparent;font-family:\"Helvetica Neue\",Arial;");
-        bh->addWidget(l);
-        root->addWidget(b);
-        root->addWidget(heavySep());
-    }
+    root->addWidget(new TitleBar(TitleBar::Variant::Success, this));
 
-    // ── Two-column body ───────────────────────────────────────────────
+    // Body — single centred card.
     auto* body = new QWidget;
-    body->setStyleSheet(QString("background:%1;").arg(theme::BG_BODY));
-    auto* body_h = new QHBoxLayout(body);
-    body_h->setContentsMargins(0, 0, 0, 0);
-    body_h->setSpacing(0);
+    body->setStyleSheet(QString("background:%1;").arg(theme::V2_BG_PAGE));
+    auto* body_v = new QVBoxLayout(body);
+    body_v->setContentsMargins(52, 68, 52, 32);
+    body_v->setSpacing(0);
     root->addWidget(body, 1);
 
-    // ════════════════════════════════════════════════════════════════
-    // LEFT column (55%)
-    // ════════════════════════════════════════════════════════════════
-    auto* left = new QWidget;
-    left->setStyleSheet(QString("background:%1;").arg(theme::BG_WHITE));
-    auto* lv = new QVBoxLayout(left);
-    lv->setContentsMargins(0, 0, 0, 0);
-    lv->setSpacing(0);
+    auto* card = new QWidget;
+    card->setObjectName("successCard");
+    card->setStyleSheet(
+        QString("QWidget#successCard {background:%1;border-radius:24px;}")
+        .arg(theme::BG_WHITE));
+    card->setGraphicsEffect(makeCardShadow(card));
+    card->setMinimumHeight(470);
 
-    // Check icon + title section
-    {
-        auto* sec = new QWidget;
-        sec->setStyleSheet(QString("background:%1;").arg(theme::BG_WHITE));
-        auto* sv = new QVBoxLayout(sec);
-        sv->setContentsMargins(theme::SPACE_XL, theme::SPACE_2XL,
-                                theme::SPACE_XL, theme::SPACE_XL);
-        sv->setAlignment(Qt::AlignCenter);
-        sv->setSpacing(theme::SPACE_MD);
+    auto* cv = new QVBoxLayout(card);
+    cv->setContentsMargins(40, 40, 40, 40);
+    cv->setSpacing(0);
+    cv->setAlignment(Qt::AlignCenter);
 
-        auto* check_ring = new QWidget;
-        check_ring->setFixedSize(96, 96);
-        applyHeavyBox(check_ring, "#dcfce7");
-        auto* chk_lbl = new QLabel("✓", check_ring);
-        chk_lbl->setAlignment(Qt::AlignCenter);
-        chk_lbl->resize(96, 96);
-        chk_lbl->setStyleSheet(
-            "color:#16a34a;font-size:52px;font-weight:900;background:transparent;");
-        sv->addWidget(check_ring, 0, Qt::AlignHCenter);
+    cv->addStretch();
 
-        auto* title = new QLabel("GIAO DỊCH THÀNH CÔNG");
-        title->setAlignment(Qt::AlignCenter);
-        title->setStyleSheet(
-            "color:#09090b;font-size:32px;font-weight:900;"
-            "background:transparent;font-family:\"Helvetica Neue\",Arial;");
-        sv->addWidget(title);
+    auto* badge = new CheckBadge(card);
+    cv->addWidget(badge, 0, Qt::AlignHCenter);
+    cv->addSpacing(48);
 
-        auto* sub = new QLabel("Cảm ơn quý khách. Vui lòng di chuyển ra cổng.");
-        sub->setAlignment(Qt::AlignCenter);
-        sub->setWordWrap(true);
-        sub->setStyleSheet(
-            "color:#52525b;font-size:18px;background:transparent;"
-            "font-family:\"Helvetica Neue\",Arial;");
-        sv->addWidget(sub);
+    auto* main = new QLabel("THANH TOÁN THÀNH CÔNG");
+    main->setAlignment(Qt::AlignCenter);
+    main->setStyleSheet(
+        QString("color:%1;font-size:42px;font-weight:800;background:transparent;"
+                "font-family:\"Inter\",\"Helvetica Neue\",Arial;")
+        .arg(theme::V2_SUCCESS));
+    cv->addWidget(main);
 
-        lv->addWidget(sec);
-        lv->addWidget(heavySep());
-    }
+    cv->addSpacing(12);
 
-    // Three info tiles
-    {
-        auto* tiles_outer = new QWidget;
-        tiles_outer->setStyleSheet(QString("background:%1;").arg(theme::BG_WHITE));
-        auto* th = new QHBoxLayout(tiles_outer);
-        th->setContentsMargins(0, 0, 0, 0);
-        th->setSpacing(0);
+    auto* sub1 = new QLabel("Cảm ơn quý khách. Phiên thanh toán đã kết thúc.");
+    sub1->setAlignment(Qt::AlignCenter);
+    sub1->setStyleSheet(
+        QString("color:%1;font-size:24px;font-weight:700;background:transparent;"
+                "font-family:\"Inter\",\"Helvetica Neue\",Arial;")
+        .arg(theme::V2_TEXT_PLACEHOLDER));
+    cv->addWidget(sub1);
 
-        auto* t1 = makeInfoTile("BIỂN SỐ XE", "---", &lbl_plate_,
-                                  28, theme::BG_WHITE, theme::TEXT_DARK);
-        th->addWidget(t1, 1);
-        th->addWidget(heavyVSep());
+    cv->addSpacing(12);
 
-        auto* t2 = makeInfoTile("SỐ TIỀN THANH TOÁN", "0 \u20ab", &lbl_amount_,
-                                  28, "#dcfce7", "#16a34a");
-        t2->setStyleSheet("background:#dcfce7;");
-        th->addWidget(t2, 1);
-        th->addWidget(heavyVSep());
+    lbl_subtext_ = new QLabel("Tự động reset màn hình trong 5s");
+    lbl_subtext_->setAlignment(Qt::AlignCenter);
+    lbl_subtext_->setStyleSheet(
+        QString("color:%1;font-size:24px;font-weight:700;background:transparent;"
+                "font-family:\"Inter\",\"Helvetica Neue\",Arial;")
+        .arg(theme::V2_TEXT_PLACEHOLDER));
+    cv->addWidget(lbl_subtext_);
 
-        auto* t3 = makeInfoTile("PHƯƠNG THỨC", "---", &lbl_method_,
-                                  22, theme::BG_WHITE, theme::TEXT_DARK);
-        th->addWidget(t3, 1);
+    cv->addStretch();
 
-        lv->addWidget(tiles_outer);
-        lv->addWidget(heavySep());
-    }
+    body_v->addWidget(card, 1);
 
-    // Countdown banner (emerald)
-    {
-        auto* sec = new QWidget;
-        sec->setStyleSheet("background:#052e16;");
-        auto* sv = new QVBoxLayout(sec);
-        sv->setContentsMargins(theme::SPACE_XL, theme::SPACE_2XL,
-                                theme::SPACE_XL, theme::SPACE_2XL);
-        sv->setAlignment(Qt::AlignCenter);
-        sv->setSpacing(theme::SPACE_SM);
-
-        auto* cd_title = new QLabel("MỜI XE RA CỔNG TRONG");
-        cd_title->setAlignment(Qt::AlignCenter);
-        cd_title->setStyleSheet(
-            "color:rgba(255,255,255,0.7);font-size:18px;font-weight:700;"
-            "background:transparent;font-family:\"Helvetica Neue\",Arial;");
-        sv->addWidget(cd_title);
-
-        lbl_seconds_ = new QLabel("15");
-        lbl_seconds_->setAlignment(Qt::AlignCenter);
-        lbl_seconds_->setStyleSheet(
-            "color:#4ade80;font-size:96px;font-weight:900;"
-            "background:transparent;font-family:\"Helvetica Neue\",Arial;");
-        sv->addWidget(lbl_seconds_);
-
-        auto* cd_unit = new QLabel("GIÂY");
-        cd_unit->setAlignment(Qt::AlignCenter);
-        cd_unit->setStyleSheet(
-            "color:rgba(255,255,255,0.6);font-size:18px;font-weight:700;"
-            "background:transparent;font-family:\"Helvetica Neue\",Arial;");
-        sv->addWidget(cd_unit);
-
-        lv->addWidget(sec, 1);
-    }
-
-    body_h->addWidget(left, 55);
-    body_h->addWidget(heavyVSep());
-
-    // ════════════════════════════════════════════════════════════════
-    // RIGHT column (45%)
-    // ════════════════════════════════════════════════════════════════
-    auto* right = new QWidget;
-    right->setStyleSheet(QString("background:%1;").arg(theme::BG_ZINC200));
-    auto* rv = new QVBoxLayout(right);
-    rv->setContentsMargins(0, 0, 0, 0);
-    rv->setSpacing(0);
-
-    // Car icon + ready section
-    {
-        auto* sec = new QWidget;
-        sec->setStyleSheet(QString("background:%1;").arg(theme::BG_ZINC200));
-        auto* sv = new QVBoxLayout(sec);
-        sv->setContentsMargins(theme::SPACE_XL, theme::SPACE_2XL,
-                                theme::SPACE_XL, theme::SPACE_2XL);
-        sv->setAlignment(Qt::AlignCenter);
-        sv->setSpacing(theme::SPACE_XL);
-
-        auto* car_ring = new QWidget;
-        car_ring->setFixedSize(160, 160);
-        applyHeavyBox(car_ring, "#dcfce7");
-        auto* car_chk = new QLabel("✓", car_ring);
-        car_chk->setAlignment(Qt::AlignCenter);
-        car_chk->resize(160, 160);
-        car_chk->setStyleSheet(
-            "color:#16a34a;font-size:96px;font-weight:900;background:transparent;");
-        sv->addWidget(car_ring, 0, Qt::AlignHCenter);
-
-        auto* ok_lbl = new QLabel("CỔNG ĐÃ MỞ");
-        ok_lbl->setAlignment(Qt::AlignCenter);
-        ok_lbl->setStyleSheet(
-            "color:#09090b;font-size:32px;font-weight:900;"
-            "background:transparent;font-family:\"Helvetica Neue\",Arial;");
-        sv->addWidget(ok_lbl);
-
-        auto* ok_sub = new QLabel("Di chuyển chậm, cẩn thận qua cần");
-        ok_sub->setAlignment(Qt::AlignCenter);
-        ok_sub->setStyleSheet(
-            "color:#52525b;font-size:18px;background:transparent;"
-            "font-family:\"Helvetica Neue\",Arial;");
-        sv->addWidget(ok_sub);
-
-        rv->addWidget(sec, 1);
-        rv->addWidget(heavySep());
-    }
-
-    // Action buttons
-    {
-        auto* btns = new QWidget;
-        btns->setStyleSheet("background:transparent;");
-        auto* bh2 = new QHBoxLayout(btns);
-        bh2->setContentsMargins(0, 0, 0, 0);
-        bh2->setSpacing(0);
-
-        auto* btn_print = makeActionBtn("IN HÓA ĐƠN", theme::BG_ZINC900, "#ffffff");
-        bh2->addWidget(btn_print, 1);
-
-        bh2->addWidget(heavyVSep());
-
-        auto* btn_done = makeActionBtn("RA CỔNG NGAY", theme::GREEN_HEADER, "#ffffff");
-        btn_done->setObjectName("btnSuccess");
-        connect(btn_done, &QPushButton::clicked,
-                this, &ScreenPaymentSuccess::countdownExpired);
-        bh2->addWidget(btn_done, 1);
-
-        rv->addWidget(btns);
-    }
-
-    body_h->addWidget(right, 45);
-
-    // Timer setup
     timer_ = new QTimer(this);
     timer_->setInterval(1000);
     connect(timer_, &QTimer::timeout, this, &ScreenPaymentSuccess::onTick);
@@ -237,25 +132,29 @@ void ScreenPaymentSuccess::setResult(const QString& plate,
                                       quint32         amount_paid,
                                       const QString& method)
 {
-    if (lbl_plate_)  lbl_plate_->setText(plate);
-    if (lbl_amount_) lbl_amount_->setText(
-        QString("%L1 \u20ab").arg(amount_paid));
-    if (lbl_method_) lbl_method_->setText(method);
+    Q_UNUSED(plate)
+    Q_UNUSED(amount_paid)
+    Q_UNUSED(method)
 }
 
 void ScreenPaymentSuccess::startCountdown(int seconds) {
-    remaining_ = seconds;
-    if (lbl_seconds_) lbl_seconds_->setText(QString::number(remaining_));
+    remaining_ = qMax(1, seconds);
+    if (lbl_subtext_)
+        lbl_subtext_->setText(
+            QString("Tự động reset màn hình trong %1s").arg(remaining_));
     timer_->start();
 }
 
 void ScreenPaymentSuccess::stopCountdown() {
-    timer_->stop();
+    if (timer_) timer_->stop();
 }
 
 void ScreenPaymentSuccess::onTick() {
     --remaining_;
-    if (lbl_seconds_) lbl_seconds_->setText(QString::number(remaining_));
+    if (lbl_subtext_)
+        lbl_subtext_->setText(
+            QString("Tự động reset màn hình trong %1s")
+                .arg(qMax(0, remaining_)));
     if (remaining_ <= 0) {
         timer_->stop();
         emit countdownExpired();

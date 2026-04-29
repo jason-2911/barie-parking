@@ -2,7 +2,6 @@
 #include "ui/Theme.h"
 
 #include <QHBoxLayout>
-#include <QVBoxLayout>
 #include <QLabel>
 #include <QTimer>
 #include <QDateTime>
@@ -10,82 +9,34 @@
 TopBar::TopBar(const Config& cfg, QWidget* parent)
     : QWidget(parent), cfg_(cfg)
 {
-    setFixedHeight(88);
+    setFixedHeight(68);
     setObjectName("topbar");
 
-    // Heavy bottom border scoped to TopBar only (so children don't inherit)
+    // Plain QWidget does not paint stylesheet backgrounds unless
+    // WA_StyledBackground is set; without it the navy fill is dropped on
+    // the floor and the parent's grey shows through.
+    setAttribute(Qt::WA_StyledBackground, true);
     setStyleSheet(
-        QString("QWidget#topbar {background:%1;"
-                "border-bottom:4px solid %2;}")
-        .arg(theme::GREEN_HEADER, theme::HEAVY_BORDER));
+        QString("QWidget#topbar {background:%1;}").arg(theme::V2_HEADER_NAVY));
 
     auto* h = new QHBoxLayout(this);
-    h->setContentsMargins(0, 0, 0, 0);
+    h->setContentsMargins(28, 0, 28, 0);
     h->setSpacing(0);
 
-    // ── Left panel: location info ─────────────────────────────────────
-    auto* left = new QWidget;
-    left->setStyleSheet(
-        QString("background:%1;").arg(theme::GREEN_HEADER));
-    auto* lv = new QVBoxLayout(left);
-    lv->setContentsMargins(theme::SPACE_XL, theme::SPACE_MD,
-                            theme::SPACE_XL, theme::SPACE_MD);
-    lv->setSpacing(2);
+    lbl_dir_ = new QLabel(cfg_.device.description.toUpper());
+    lbl_dir_->setStyleSheet(
+        "color:#FFFFFF;font-size:28px;font-weight:700;background:transparent;"
+        "font-family:\"Inter\",\"Helvetica Neue\",Arial;");
+    h->addWidget(lbl_dir_, 0, Qt::AlignVCenter | Qt::AlignLeft);
 
-    auto* lane_lbl = new QLabel("LÀN THANH TOÁN TỰ ĐỘNG");
-    lane_lbl->setStyleSheet(
-        "color:rgba(255,255,255,0.92);font-size:14px;font-weight:600;"
-        "letter-spacing:2px;background:transparent;"
-        "font-family:\"Helvetica Neue\",Arial;");
-    lv->addWidget(lane_lbl);
-
-    auto* loc_lbl = new QLabel(cfg_.device.description.toUpper());
-    loc_lbl->setStyleSheet(
-        "color:#ffffff;font-size:32px;font-weight:900;"
-        "letter-spacing:2px;background:transparent;"
-        "font-family:\"Helvetica Neue\",Arial;");
-    lv->addWidget(loc_lbl);
-
-    h->addWidget(left, 1);
-
-    // ── Thick vertical divider ────────────────────────────────────────
-    auto* divider = new QFrame;
-    divider->setFixedWidth(4);
-    divider->setStyleSheet(
-        QString("background:%1;border:none;").arg(theme::HEAVY_BORDER));
-    h->addWidget(divider);
-
-    // ── Right panel: clock ────────────────────────────────────────────
-    auto* right = new QWidget;
-    right->setFixedWidth(240);
-    right->setStyleSheet(
-        QString("background:%1;").arg(theme::GREEN_CLOCK));
-    auto* rv = new QVBoxLayout(right);
-    rv->setContentsMargins(theme::SPACE_XL, theme::SPACE_MD,
-                            theme::SPACE_XL, theme::SPACE_MD);
-    rv->setSpacing(2);
-    rv->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-
-    auto* time_title = new QLabel("THỜI GIAN");
-    time_title->setAlignment(Qt::AlignRight);
-    time_title->setStyleSheet(
-        "color:rgba(255,255,255,0.85);font-size:14px;font-weight:600;"
-        "letter-spacing:2px;background:transparent;"
-        "font-family:\"Helvetica Neue\",Arial;");
-    rv->addWidget(time_title);
+    h->addStretch();
 
     lbl_time_ = new QLabel;
-    lbl_time_->setAlignment(Qt::AlignRight);
     lbl_time_->setStyleSheet(
-        "color:#ffffff;font-size:32px;font-weight:900;"
-        "letter-spacing:2px;background:transparent;"
-        "font-family:\"Helvetica Neue\",Arial;");
-    rv->addWidget(lbl_time_);
+        "color:#FFFFFF;font-size:28px;font-weight:700;background:transparent;"
+        "font-family:\"Inter\",\"Helvetica Neue\",Arial;");
+    h->addWidget(lbl_time_, 0, Qt::AlignVCenter | Qt::AlignRight);
 
-    h->addWidget(right);
-
-    // hidden compat members
-    lbl_dir_  = nullptr;
     lbl_date_ = nullptr;
 
     auto* timer = new QTimer(this);
@@ -98,4 +49,4 @@ void TopBar::tick() {
     lbl_time_->setText(QDateTime::currentDateTime().toString("HH:mm:ss"));
 }
 
-void TopBar::setDirection(BarrierDirection) { /* not shown in this design */ }
+void TopBar::setDirection(BarrierDirection) { /* not shown in v2 design */ }

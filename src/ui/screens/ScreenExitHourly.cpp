@@ -1,436 +1,390 @@
 #include "ui/screens/ScreenExitHourly.h"
-#include "ui/screens/ScreenHelpers.h"
 #include "ui/widgets/QRWidget.h"
+#include "ui/widgets/TitleBar.h"
 #include "ui/Theme.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
 #include <QLabel>
-#include <QPushButton>
+#include <QFrame>
+#include <QGraphicsDropShadowEffect>
+#include <QGraphicsOpacityEffect>
+#include <QTimer>
+#include <QPainter>
 
-using namespace ui;
+namespace {
 
-static const char* kBanks[][2] = {
-    {"VCB",  "Vietcombank"}, {"BIDV", "BIDV"},
-    {"VTB",  "VietinBank"},  {"AGB",  "Agribank"},
-    {"TCB",  "Techcombank"}, {"MB",   "MB Bank"},
-    {"ACB",  "ACB"},         {"TPB",  "TPBank"},
-    {"VPB",  "VPBank"},      {"SCB",  "Sacombank"},
-    {"SHB",  "SHB"},         {"HDB",  "HDBank"}
+// ── Layout / behaviour constants ─────────────────────────────────────────────
+constexpr int kWarningSeconds      = 30;   // timer turns red at ≤30s left
+constexpr int kTimedOutHoldSeconds = 5;    // QrState::TimedOut hold time
+constexpr int kCardRadius          = 24;
+constexpr int kQrBoxRadius         = 16;
+constexpr int kLeftCardWidth       = 445;
+
+// Soft drop shadow shared between left and right cards.
+QGraphicsDropShadowEffect* makeCardShadow(QObject* parent) {
+    auto* eff = new QGraphicsDropShadowEffect(parent);
+    eff->setBlurRadius(28);
+    eff->setOffset(0, 10);
+    eff->setColor(QColor(0, 0, 0, 36));
+    return eff;
+}
+
+// Wrap a card body in a rounded white shell.
+QString cardSheet() {
+    return QString("background:%1;border-radius:%2px;")
+            .arg(theme::BG_WHITE).arg(kCardRadius);
+}
+
+// Refresh-icon overlay shown over the QR when the session times out.
+// White circle with a 4 px navy border and a "↻" glyph in the middle —
+// matches the design without hand-rolling vector arrow heads.
+class RefreshBadge : public QWidget {
+public:
+    explicit RefreshBadge(QWidget* parent = nullptr) : QWidget(parent) {
+        setFixedSize(82, 82);
+        setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const QRectF r = rect().adjusted(2, 2, -2, -2);
+        p.setBrush(QColor(theme::BG_WHITE));
+        p.setPen(QPen(QColor(theme::V2_TEXT_LABEL), 4));
+        p.drawEllipse(r);
+
+        QFont f("Inter");
+        f.setStyleHint(QFont::SansSerif);
+        f.setPixelSize(38);
+        f.setWeight(QFont::Black);
+        p.setFont(f);
+        p.setPen(QColor(theme::V2_TEXT_LABEL));
+        p.drawText(rect(), Qt::AlignCenter, QStringLiteral(u"↻"));
+    }
 };
+
+QLabel* makeLabel(const QString& text, int size, int weight,
+                  const QString& color, Qt::Alignment a = Qt::AlignLeft)
+{
+    auto* l = new QLabel(text);
+    l->setAlignment(a);
+    l->setStyleSheet(
+        QString("color:%1;font-size:%2px;font-weight:%3;background:transparent;"
+                "font-family:\"Inter\",\"Helvetica Neue\",Arial;")
+        .arg(color).arg(size).arg(weight));
+    return l;
+}
+
+QString currencyText(quint32 v) {
+    return QString("%L1 VNĐ").arg(v);
+}
+
+QString formatDuration(int minutes) {
+    int h = minutes / 60;
+    int m = minutes % 60;
+    return QString("%1 giờ %2 phút")
+            .arg(h, 2, 10, QChar('0'))
+            .arg(m, 2, 10, QChar('0'));
+}
+
+} // anonymous namespace
 
 ScreenExitHourly::ScreenExitHourly(const Config& cfg, QWidget* parent)
     : QWidget(parent), cfg_(cfg)
 {
-    setStyleSheet(QString("background:%1;").arg(theme::BG_BODY));
+    setStyleSheet(QString("background:%1;").arg(theme::V2_BG_PAGE));
 
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
-    // ── Orange banner ─────────────────────────────────────────────────
-    {
-        auto* b = new QWidget;
-        b->setFixedHeight(88);
-        b->setStyleSheet(QString("background:%1;").arg(theme::ORANGE));
-        auto* bh = new QHBoxLayout(b);
-        bh->setContentsMargins(0, 0, 0, 0);
-        auto* l = new QLabel("THANH TOÁN PHÍ GỬI XE");
-        l->setAlignment(Qt::AlignCenter);
-        l->setStyleSheet(
-            "color:#ffffff;font-size:46px;font-weight:900;letter-spacing:3px;"
-            "background:transparent;font-family:\"Helvetica Neue\",Arial;");
-        bh->addWidget(l);
-        root->addWidget(b);
-        root->addWidget(heavySep());
-    }
+    // ── Title bar ─────────────────────────────────────────────────────────
+    auto* title = new TitleBar(TitleBar::Variant::Payment, this);
+    root->addWidget(title);
 
-    // ── Two-column body ───────────────────────────────────────────────
-    // Grid-based so the top row (info ↔ QR) stays height-synced across
-    // columns. A plain per-column VBox drifts whenever either side has a
-    // bigger min-height than its stretch share would predict — here the
-    // GIỜ VÀO tile pushes the info section past its 8/12 share.
+    // ── Body ──────────────────────────────────────────────────────────────
     auto* body = new QWidget;
-    body->setStyleSheet(QString("background:%1;").arg(theme::BG_BODY));
-    auto* body_g = new QGridLayout(body);
-    body_g->setContentsMargins(0, 0, 0, 0);
-    body_g->setHorizontalSpacing(0);
-    body_g->setVerticalSpacing(0);
-    body_g->setColumnStretch(0, 1);
-    body_g->setColumnStretch(2, 1);
-    body_g->setRowStretch(0, 8);
-    body_g->setRowStretch(2, 4);
+    body->setStyleSheet(QString("background:%1;").arg(theme::V2_BG_PAGE));
+    auto* body_grid = new QGridLayout(body);
+    body_grid->setContentsMargins(52, 26, 52, 26);
+    body_grid->setHorizontalSpacing(26);
+    body_grid->setVerticalSpacing(0);
+    body_grid->setColumnStretch(0, 0);
+    body_grid->setColumnStretch(1, 1);
     root->addWidget(body, 1);
 
-    QWidget* info_section    = nullptr;
-    QWidget* payment_section = nullptr;
-    QWidget* qr_section      = nullptr;
-    QWidget* bank_section    = nullptr;
-    QWidget* plate_section   = nullptr;
+    // ════════════════════════════════════════════════════════════════════
+    // LEFT CARD — vehicle / payment info
+    // ════════════════════════════════════════════════════════════════════
+    auto* left = new QWidget;
+    left->setObjectName("leftCard");
+    left->setFixedWidth(kLeftCardWidth);
+    left->setStyleSheet(QString("QWidget#leftCard {%1}").arg(cardSheet()));
+    left->setGraphicsEffect(makeCardShadow(left));
 
-    // ════════════════════════════════════════════════════════════════
-    // LEFT column — vehicle info section
-    // ════════════════════════════════════════════════════════════════
+    auto* lv = new QVBoxLayout(left);
+    lv->setContentsMargins(52, 48, 52, 48);
+    lv->setSpacing(0);
 
-    // Vehicle info section — ticket QR placeholder removed; the full width
-    // is now available for plate, status and info tiles.
-    {
-        auto* sec = new QWidget;
-        sec->setStyleSheet(QString("background:%1;").arg(theme::BG_WHITE));
-        auto* sh = new QHBoxLayout(sec);
-        sh->setContentsMargins(0, 0, 0, 0);
-        sh->setSpacing(0);
+    auto addLabelValue = [&](const QString& label_text,
+                              const QString& value_text,
+                              QLabel** value_out,
+                              const QString& value_color,
+                              int value_size,
+                              int top_margin) {
+        if (top_margin > 0) lv->addSpacing(top_margin);
+        lv->addWidget(makeLabel(label_text, 24, 700, theme::V2_TEXT_LABEL));
+        lv->addSpacing(8);
+        auto* v = makeLabel(value_text, value_size, 800, value_color);
+        if (value_out) *value_out = v;
+        lv->addWidget(v);
+    };
 
-        auto* info_cell = new QWidget;
-        info_cell->setStyleSheet(QString("background:%1;").arg(theme::BG_WHITE));
-        auto* iv = new QVBoxLayout(info_cell);
-        iv->setContentsMargins(theme::SPACE_LG, theme::SPACE_LG,
-                                theme::SPACE_LG, theme::SPACE_SM);
-        iv->setSpacing(0);
+    addLabelValue("BIỂN SỐ XE",  "---.--", &lbl_plate_,
+                  theme::V2_TEXT_DARK, 38, 0);
+    addLabelValue("SỐ TIỀN CẦN THANH TOÁN", "0 VNĐ", &lbl_amount_due_,
+                  theme::V2_SUCCESS, 36, 28);
+    addLabelValue("SỐ TIỀN ĐÃ NẠP", "0 VNĐ", &lbl_amount_paid_,
+                  theme::V2_DANGER, 36, 28);
+    addLabelValue("SỐ TIỀN CÒN THIẾU", "0 VNĐ", &lbl_amount_remain_,
+                  theme::V2_TEXT_DARK, 36, 28);
 
-        // Plate row
-        auto* plate_row = new QWidget;
-        plate_row->setStyleSheet("background:transparent;");
-        auto* pr_h = new QHBoxLayout(plate_row);
-        pr_h->setContentsMargins(0, 0, 0, 0);
-        pr_h->setSpacing(theme::SPACE_MD);
+    lv->addSpacing(28);
+    auto* divider = new QFrame;
+    divider->setFixedHeight(2);
+    divider->setStyleSheet(QString("background:%1;border:none;")
+                            .arg(theme::V2_DIVIDER));
+    lv->addWidget(divider);
+    lv->addSpacing(24);
 
-        auto* plate_col = new QVBoxLayout;
-        plate_col->setSpacing(2);
-        auto* plate_title = new QLabel("BIỂN SỐ XE");
-        plate_title->setStyleSheet(
-            "color:#71717a;font-size:17px;font-weight:700;letter-spacing:1.5px;"
-            "background:transparent;font-family:\"Helvetica Neue\",Arial;");
-        plate_col->addWidget(plate_title);
-        lbl_plate_ = new QLabel("---.--");
-        lbl_plate_->setStyleSheet(
-            "color:#09090b;font-size:58px;font-weight:900;letter-spacing:2px;"
-            "background:transparent;font-family:\"Helvetica Neue\",Arial;");
-        plate_col->addWidget(lbl_plate_);
-        pr_h->addLayout(plate_col, 1);
+    // Time row — two columns (entry / exit)
+    auto* time_row = new QWidget;
+    time_row->setStyleSheet("background:transparent;");
+    auto* tr_grid = new QGridLayout(time_row);
+    tr_grid->setContentsMargins(0, 0, 0, 0);
+    tr_grid->setHorizontalSpacing(24);
+    tr_grid->setVerticalSpacing(4);
+    tr_grid->setColumnStretch(0, 1);
+    tr_grid->setColumnStretch(1, 1);
 
-        // Status badge — size flexes to content
-        auto* status_box = new QWidget;
-        status_box->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
-        applyHeavyBox(status_box, theme::DANGER_LIGHT);
-        auto* sv = new QVBoxLayout(status_box);
-        sv->setContentsMargins(theme::SPACE_MD, theme::SPACE_SM,
-                                theme::SPACE_MD, theme::SPACE_SM);
-        sv->setAlignment(Qt::AlignCenter);
-        auto* s_val = new QLabel("CHƯA THANH TOÁN");
-        s_val->setAlignment(Qt::AlignCenter);
-        s_val->setWordWrap(true);
-        s_val->setStyleSheet(
-            "color:#b91c1c;font-size:19px;font-weight:900;background:transparent;"
-            "font-family:\"Helvetica Neue\",Arial;");
-        sv->addWidget(s_val);
-        pr_h->addWidget(status_box, 0, Qt::AlignVCenter);
-        iv->addWidget(plate_row);
-        iv->addSpacing(theme::SPACE_MD);
+    tr_grid->addWidget(makeLabel("GIỜ VÀO", 22, 700, theme::V2_TEXT_LABEL), 0, 0);
+    tr_grid->addWidget(makeLabel("GIỜ RA",  22, 700, theme::V2_TEXT_LABEL), 0, 1);
 
-        // Three info tiles row — use heavyVSep between for clean dividers
-        auto* tiles_outer = new QWidget;
-        tiles_outer->setStyleSheet(QString("background:%1;").arg(theme::BG_WHITE));
-        auto* tiles_h = new QHBoxLayout(tiles_outer);
-        tiles_h->setContentsMargins(0, 0, 0, 0);
-        tiles_h->setSpacing(0);
+    lbl_entry_time_ = makeLabel("--:--:--", 26, 800, theme::V2_TEXT_DARK);
+    lbl_exit_time_  = makeLabel("--:--:--", 26, 800, theme::V2_TEXT_DARK);
+    tr_grid->addWidget(lbl_entry_time_, 1, 0);
+    tr_grid->addWidget(lbl_exit_time_,  1, 1);
 
-        lbl_exit_ = nullptr; lbl_duration_ = nullptr; lbl_received_ = nullptr;
+    lbl_entry_date_ = makeLabel("--/--/----", 20, 600, theme::V2_TEXT_MUTED);
+    lbl_exit_date_  = makeLabel("--/--/----", 20, 600, theme::V2_TEXT_MUTED);
+    tr_grid->addWidget(lbl_entry_date_, 2, 0);
+    tr_grid->addWidget(lbl_exit_date_,  2, 1);
 
-        // entry tile
-        auto* t1 = makeInfoTile("GIỜ VÀO", "--/--/----", &lbl_entry_,
-                                  24, theme::BG_WHITE, theme::TEXT_DARK);
-        lbl_entry_sub_ = new QLabel("--:--:--");
-        lbl_entry_sub_->setStyleSheet(
-            "color:#52525b;font-size:20px;font-weight:700;background:transparent;"
-            "font-family:\"Helvetica Neue\",Arial;");
-        if (auto* v = qobject_cast<QVBoxLayout*>(t1->layout()))
-            v->insertWidget(3, lbl_entry_sub_);
-        tiles_h->addWidget(t1, 1);
-        tiles_h->addWidget(heavyVSep());
+    lv->addWidget(time_row);
 
-        auto* t2 = makeInfoTile("PHÍ GỬI XE", "0 \u20ab", &lbl_total_,
-                                  36, theme::BG_WHITE, theme::TEXT_DARK);
-        tiles_h->addWidget(t2, 1);
-        tiles_h->addWidget(heavyVSep());
+    lv->addSpacing(28);
+    lv->addWidget(makeLabel("TỔNG THỜI GIAN", 22, 700, theme::V2_TEXT_LABEL));
+    lv->addSpacing(12);
+    lbl_duration_ = makeLabel("00 giờ 00 phút", 28, 800, theme::V2_TEXT_DARK);
+    lv->addWidget(lbl_duration_);
 
-        auto* t3 = makeInfoTile("CÒN THIẾU", "0 \u20ab", &lbl_remaining_,
-                                  36, theme::DANGER_LIGHT, theme::DANGER);
-        tiles_h->addWidget(t3, 1);
+    lv->addStretch();
 
-        // Outer heavy border (scoped so children don't inherit)
-        auto* tiles_wrapper = new QWidget;
-        tiles_wrapper->setObjectName("tilesWrap");
-        tiles_wrapper->setStyleSheet(
-            QString("QWidget#tilesWrap {background:%1;border:4px solid %2;}")
-            .arg(theme::BG_WHITE, theme::HEAVY_BORDER));
-        auto* tw_v = new QVBoxLayout(tiles_wrapper);
-        tw_v->setContentsMargins(0, 0, 0, 0);
-        tw_v->setSpacing(0);
-        tw_v->addWidget(tiles_outer);
+    body_grid->addWidget(left, 0, 0);
 
-        iv->addWidget(tiles_wrapper);
-        sh->addWidget(info_cell, 1);
-        info_section = sec;
-    }
+    // ════════════════════════════════════════════════════════════════════
+    // RIGHT CARD — message + countdown + QR
+    // ════════════════════════════════════════════════════════════════════
+    auto* right = new QWidget;
+    right->setObjectName("rightCard");
+    right->setStyleSheet(QString("QWidget#rightCard {%1}").arg(cardSheet()));
+    right->setGraphicsEffect(makeCardShadow(right));
 
-    // Payment method section
-    {
-        auto* sec = new QWidget;
-        sec->setStyleSheet(QString("background:%1;").arg(theme::BG_WHITE));
-        auto* sv = new QVBoxLayout(sec);
-        sv->setContentsMargins(0, 0, 0, 0);
-        sv->setSpacing(0);
+    auto* rv = new QVBoxLayout(right);
+    rv->setContentsMargins(56, 48, 56, 40);
+    rv->setSpacing(0);
 
-        // Header
-        auto* hdr = new QWidget;
-        hdr->setStyleSheet(QString("background:%1;").arg(theme::BG_WHITE));
-        auto* hv = new QVBoxLayout(hdr);
-        hv->setContentsMargins(theme::SPACE_LG, theme::SPACE_MD,
-                                theme::SPACE_LG, theme::SPACE_MD);
-        hv->setSpacing(4);
-        auto* h_title = new QLabel("PHƯƠNG THỨC THANH TOÁN");
-        h_title->setStyleSheet(
-            "color:#71717a;font-size:17px;font-weight:700;letter-spacing:1.5px;"
-            "background:transparent;font-family:\"Helvetica Neue\",Arial;");
-        hv->addWidget(h_title);
-        auto* h_sub = new QLabel("CHỌN 1 TRONG 2 HÌNH THỨC");
-        h_sub->setStyleSheet(
-            "color:#09090b;font-size:34px;font-weight:900;background:transparent;"
-            "font-family:\"Helvetica Neue\",Arial;");
-        hv->addWidget(h_sub);
-        sv->addWidget(hdr);
-        sv->addWidget(heavySep());
+    lbl_message_ = makeLabel(
+        "Quý khách có thể bỏ tiền ở ngăn dưới\nhoặc quét QR Code",
+        26, 800, theme::V2_SUCCESS, Qt::AlignCenter);
+    lbl_message_->setWordWrap(true);
+    rv->addWidget(lbl_message_);
+    rv->addSpacing(16);
 
-        // Mode buttons
-        auto* modes = new QWidget;
-        modes->setStyleSheet("background:transparent;");
-        auto* mh = new QHBoxLayout(modes);
-        mh->setContentsMargins(0, 0, 0, 0);
-        mh->setSpacing(0);
+    lbl_countdown_ = makeLabel("03:00 ms", 42, 800, theme::V2_TEXT_DARK,
+                                Qt::AlignCenter);
+    rv->addWidget(lbl_countdown_);
 
-        auto makeMode = [](const QString& symbol, const QString& title,
-                            const QString& desc, bool active,
-                            bool left_border) -> QWidget* {
-            // Scope the QSS to this widget via an objectName so the
-            // left border cannot cascade into child QLabels (which would
-            // otherwise each paint their own vertical bar).
-            static int mode_counter = 0;
-            auto* card = new QWidget;
-            card->setObjectName(QString("modeCard_%1").arg(++mode_counter));
-            QString bg = active ? theme::ORANGE_100 : "#ffffff";
-            QString cs = QString("QWidget#%1 {background:%2;%3}")
-                             .arg(card->objectName(), bg,
-                                   left_border
-                                       ? QString("border-left:4px solid %1;")
-                                             .arg(theme::HEAVY_BORDER)
-                                       : QString{});
-            card->setStyleSheet(cs);
+    rv->addSpacing(22);
 
-            auto* cv = new QVBoxLayout(card);
-            cv->setContentsMargins(theme::SPACE_XL, theme::SPACE_XL,
-                                    theme::SPACE_XL, theme::SPACE_XL);
-            cv->setSpacing(theme::SPACE_MD);
+    // QR box
+    qr_box_ = new QFrame;
+    qr_box_->setObjectName("qrBox");
+    qr_box_->setStyleSheet(
+        QString("QFrame#qrBox {background:%1;border:2px solid %2;border-radius:%3px;}")
+            .arg(theme::BG_WHITE, theme::V2_QR_BORDER)
+            .arg(kQrBoxRadius));
+    qr_box_->setMinimumSize(420, 420);
+    qr_box_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
 
-            auto* icon = new QWidget;
-            icon->setMinimumSize(100, 100);
-            applyHeavyBox(icon, active ? theme::ORANGE : theme::BG_ZINC100);
-            auto* icon_v = new QVBoxLayout(icon);
-            icon_v->setContentsMargins(0, 0, 0, 0);
-            icon_v->setAlignment(Qt::AlignCenter);
-            auto* icon_lbl = new QLabel(symbol);
-            icon_lbl->setAlignment(Qt::AlignCenter);
-            icon_lbl->setStyleSheet(
-                QString("color:%1;font-size:60px;font-weight:900;background:transparent;"
-                        "font-family:\"Helvetica Neue\",Arial;")
-                .arg(active ? "#ffffff" : theme::HEAVY_BORDER));
-            icon_v->addWidget(icon_lbl);
-            cv->addWidget(icon);
+    auto* qr_layout = new QVBoxLayout(qr_box_);
+    qr_layout->setContentsMargins(20, 20, 20, 20);
+    qr_layout->setSpacing(0);
 
-            auto* t = new QLabel(title);
-            t->setStyleSheet(
-                "color:#09090b;font-size:34px;font-weight:900;background:transparent;"
-                "font-family:\"Helvetica Neue\",Arial;");
-            cv->addWidget(t);
+    qr_widget_ = new QRWidget;
+    qr_layout->addWidget(qr_widget_, 1);
 
-            auto* d = new QLabel(desc);
-            d->setWordWrap(true);
-            d->setStyleSheet(
-                "color:#52525b;font-size:19px;font-weight:600;background:transparent;"
-                "font-family:\"Helvetica Neue\",Arial;");
-            cv->addWidget(d);
-            cv->addStretch();
-            return card;
-        };
+    // Overlay (refresh badge) sits above the QR and is hidden until timeout.
+    qr_overlay_ = new RefreshBadge(qr_box_);
+    qr_overlay_->hide();
 
-        mh->addWidget(makeMode("\u20ab", "TIỀN MẶT",
-            "Nạp tiền trực tiếp vào máy.", false, false), 1);
-        mh->addWidget(makeMode("QR", "QUÉT QR",
-            "Ngân hàng hoặc ví điện tử.", true, true), 1);
-        sv->addWidget(modes);
-        payment_section = sec;
-    }
+    rv->addWidget(qr_box_, 1, Qt::AlignHCenter);
 
-    // ════════════════════════════════════════════════════════════════
-    // RIGHT column — QR / bank / plate sections
-    // ════════════════════════════════════════════════════════════════
+    rv->addSpacing(22);
+    auto* hint = makeLabel(
+        "Khi hết giờ hệ thống sẽ tự động reset phiên và đóng QR.",
+        20, 700, theme::V2_TEXT_MUTED, Qt::AlignCenter);
+    hint->setWordWrap(true);
+    rv->addWidget(hint);
 
-    // QR section — fill the entire right-top cell.
-    {
-        auto* sec = new QWidget;
-        sec->setStyleSheet(QString("background:%1;").arg(theme::BG_WHITE));
-        auto* sv = new QVBoxLayout(sec);
-        sv->setContentsMargins(theme::SPACE_LG, theme::SPACE_MD,
-                                theme::SPACE_LG, theme::SPACE_SM);
-        sv->setSpacing(theme::SPACE_SM);
-        auto* t = new QLabel("QUÉT MÃ QR ĐỂ THANH TOÁN");
-        t->setAlignment(Qt::AlignCenter);
-        t->setStyleSheet(
-            "color:#71717a;font-size:17px;font-weight:700;letter-spacing:2px;"
-            "background:transparent;font-family:\"Helvetica Neue\",Arial;");
-        sv->addWidget(t);
-        qr_widget_ = new QRWidget;
-        // No alignment flag — widget expands to fill all available space.
-        sv->addWidget(qr_widget_, 1);
-        qr_section = sec;
-    }
+    body_grid->addWidget(right, 0, 1);
 
-    // Bank list section — grid rows/cells share space via stretch so the
-    // whole grid scales with the available height without clipping labels.
-    {
-        auto* sec = new QWidget;
-        sec->setStyleSheet(QString("background:%1;").arg(theme::BG_WHITE));
-        auto* sv = new QVBoxLayout(sec);
-        sv->setContentsMargins(theme::SPACE_SM, theme::SPACE_SM,
-                                theme::SPACE_SM, theme::SPACE_SM);
-        sv->setSpacing(4);
-        auto* t = new QLabel("NGÂN HÀNG HỖ TRỢ");
-        t->setStyleSheet(
-            "color:#71717a;font-size:11px;font-weight:700;letter-spacing:1.5px;"
-            "background:transparent;font-family:\"Helvetica Neue\",Arial;");
-        sv->addWidget(t);
+    // ── Countdown timer wiring ────────────────────────────────────────────
+    tick_timer_ = new QTimer(this);
+    tick_timer_->setInterval(1000);
+    connect(tick_timer_, &QTimer::timeout, this, &ScreenExitHourly::onTick);
 
-        auto* grid_outer = new QWidget;
-        grid_outer->setObjectName("bankGrid");
-        grid_outer->setStyleSheet(
-            QString("QWidget#bankGrid {background:%1;border:4px solid %2;}")
-            .arg(theme::BG_WHITE, theme::HEAVY_BORDER));
-        auto* grid_v = new QVBoxLayout(grid_outer);
-        grid_v->setContentsMargins(0, 0, 0, 0);
-        grid_v->setSpacing(0);
-
-        constexpr int kCols = 4, kRows = 3;
-        for (int row = 0; row < kRows; ++row) {
-            auto* row_w = new QWidget;
-            row_w->setStyleSheet("background:transparent;");
-            auto* rh = new QHBoxLayout(row_w);
-            rh->setContentsMargins(0, 0, 0, 0);
-            rh->setSpacing(0);
-            for (int col = 0; col < kCols; ++col) {
-                int i = row * kCols + col;
-                auto* cell = new QWidget;
-                cell->setStyleSheet("background:#ffffff;");
-                cell->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-                auto* cv2 = new QVBoxLayout(cell);
-                cv2->setContentsMargins(4, 2, 4, 2);
-                cv2->setAlignment(Qt::AlignCenter);
-                cv2->setSpacing(0);
-
-                auto* code_lbl = new QLabel(kBanks[i][0]);
-                code_lbl->setAlignment(Qt::AlignCenter);
-                code_lbl->setStyleSheet(
-                    "color:#09090b;font-size:19px;font-weight:800;"
-                    "background:transparent;"
-                    "font-family:\"Helvetica Neue\",Arial;");
-                cv2->addWidget(code_lbl);
-
-                auto* name_lbl = new QLabel(kBanks[i][1]);
-                name_lbl->setAlignment(Qt::AlignCenter);
-                name_lbl->setWordWrap(false);
-                name_lbl->setStyleSheet(
-                    "color:#71717a;font-size:13px;font-weight:600;background:transparent;"
-                    "font-family:\"Helvetica Neue\",Arial;");
-                cv2->addWidget(name_lbl);
-                rh->addWidget(cell, 1);
-                if (col < kCols - 1) rh->addWidget(heavyVSep());
-            }
-            grid_v->addWidget(row_w, 1);
-            if (row < kRows - 1) grid_v->addWidget(heavySep());
-        }
-        sv->addWidget(grid_outer, 1);
-        bank_section = sec;
-    }
-
-    // Plate dark section
-    {
-        auto* sec = new QWidget;
-        sec->setStyleSheet(QString("background:%1;").arg(theme::BG_WHITE));
-        auto* sv = new QVBoxLayout(sec);
-        sv->setContentsMargins(theme::SPACE_MD, theme::SPACE_MD,
-                                theme::SPACE_MD, theme::SPACE_MD);
-        sv->setSpacing(theme::SPACE_SM);
-        auto* t = new QLabel("BIỂN SỐ NHẬN DIỆN");
-        t->setStyleSheet(
-            "color:#71717a;font-size:14px;font-weight:700;letter-spacing:1.5px;"
-            "background:transparent;font-family:\"Helvetica Neue\",Arial;");
-        sv->addWidget(t);
-
-        auto* dark = new QWidget;
-        applyHeavyBox(dark, theme::BG_ZINC900);
-        auto* dv = new QVBoxLayout(dark);
-        dv->setContentsMargins(theme::SPACE_MD, theme::SPACE_SM,
-                                theme::SPACE_MD, theme::SPACE_SM);
-        dv->setAlignment(Qt::AlignCenter);
-        lbl_plate_dark_ = new QLabel("---.--");
-        lbl_plate_dark_->setAlignment(Qt::AlignCenter);
-        lbl_plate_dark_->setStyleSheet(
-            "color:#ffffff;font-size:50px;font-weight:800;letter-spacing:4px;"
-            "background:transparent;"
-            "font-family:\"Helvetica Neue\",Arial;");
-        dv->addWidget(lbl_plate_dark_);
-        sv->addWidget(dark, 1);
-        plate_section = sec;
-    }
-
-    // ── Assemble the grid ─────────────────────────────────────────────
-    // Row 0 (info ↔ QR)  : stretch 8 — synced across columns.
-    // Row 1 (heavySep)   : fixed 4 px, one per column.
-    // Row 2 (payment ↔ bank+plate): stretch 4 — also synced.
-    body_g->addWidget(info_section,    0, 0);
-    body_g->addWidget(heavySep(),      1, 0);
-    body_g->addWidget(payment_section, 2, 0);
-
-    body_g->addWidget(heavyVSep(),     0, 1, 3, 1);
-
-    body_g->addWidget(qr_section,      0, 2);
-    body_g->addWidget(heavySep(),      1, 2);
-
-    auto* right_bottom = new QWidget;
-    right_bottom->setStyleSheet(QString("background:%1;").arg(theme::BG_ZINC200));
-    auto* rbv = new QVBoxLayout(right_bottom);
-    rbv->setContentsMargins(0, 0, 0, 0);
-    rbv->setSpacing(0);
-    rbv->addWidget(bank_section, 2);
-    rbv->addWidget(heavySep());
-    rbv->addWidget(plate_section, 2);
-    body_g->addWidget(right_bottom,    2, 2);
+    setQrState(QrState::Normal);
+    resetCountdown(cfg_.ui.payment_timeout_seconds > 0
+                       ? cfg_.ui.payment_timeout_seconds
+                       : 180);
 }
 
 void ScreenExitHourly::setVehicleInfo(const VehicleInfo& vi) {
     current_vi_ = vi;
-    if (lbl_plate_)      lbl_plate_->setText(vi.plate);
-    if (lbl_plate_dark_) lbl_plate_dark_->setText(vi.plate);
-    if (lbl_entry_) {
-        lbl_entry_->setText(vi.entry_time.toString("dd/MM/yyyy"));
-        if (lbl_entry_sub_) lbl_entry_sub_->setText(vi.entry_time.toString("HH:mm:ss"));
-    }
-    if (lbl_total_)     lbl_total_->setText(QString("%L1 \u20ab").arg(vi.amount_due));
-    if (lbl_remaining_) lbl_remaining_->setText(QString("%L1 \u20ab").arg(vi.amount_due));
-    if (qr_widget_ && !vi.qr_url.isEmpty()) qr_widget_->setUrl(vi.qr_url);
+
+    if (lbl_plate_)        lbl_plate_->setText(vi.plate.isEmpty() ? "---.--" : vi.plate);
+    if (lbl_amount_due_)   lbl_amount_due_->setText(currencyText(vi.amount_due));
+    if (lbl_amount_paid_)  lbl_amount_paid_->setText(currencyText(0));
+    if (lbl_amount_remain_) lbl_amount_remain_->setText(currencyText(vi.amount_due));
+
+    if (lbl_entry_time_)
+        lbl_entry_time_->setText(vi.entry_time.toString("HH:mm:ss"));
+    if (lbl_entry_date_)
+        lbl_entry_date_->setText(vi.entry_time.toString("dd/MM/yyyy"));
+    if (lbl_exit_time_)
+        lbl_exit_time_->setText(vi.exit_time.toString("HH:mm:ss"));
+    if (lbl_exit_date_)
+        lbl_exit_date_->setText(vi.exit_time.toString("dd/MM/yyyy"));
+
+    if (lbl_duration_)
+        lbl_duration_->setText(formatDuration(vi.duration_minutes));
+
+    if (qr_widget_ && !vi.qr_url.isEmpty())
+        qr_widget_->setUrl(vi.qr_url);
+
+    setQrState(QrState::Normal);
+    resetCountdown(cfg_.ui.payment_timeout_seconds > 0
+                       ? cfg_.ui.payment_timeout_seconds
+                       : 180);
 }
 
 void ScreenExitHourly::updatePayment(quint32 received, quint32 remaining) {
-    if (lbl_received_)  lbl_received_->setText(QString("%L1 \u20ab").arg(received));
-    if (lbl_remaining_) lbl_remaining_->setText(QString("%L1 \u20ab").arg(remaining));
+    if (lbl_amount_paid_)   lbl_amount_paid_->setText(currencyText(received));
+    if (lbl_amount_remain_) lbl_amount_remain_->setText(currencyText(remaining));
+}
+
+void ScreenExitHourly::stop() {
+    if (tick_timer_) tick_timer_->stop();
+}
+
+void ScreenExitHourly::resetCountdown(int seconds) {
+    remaining_secs_ = seconds;
+    timeout_extra_  = 0;
+    updateTimerLabel();
+    if (tick_timer_) tick_timer_->start();
+}
+
+void ScreenExitHourly::onTick() {
+    if (state_ == QrState::TimedOut) {
+        ++timeout_extra_;
+        if (timeout_extra_ >= kTimedOutHoldSeconds) {
+            tick_timer_->stop();
+            emit sessionTimedOut();
+        }
+        return;
+    }
+
+    if (remaining_secs_ > 0) --remaining_secs_;
+    updateTimerLabel();
+
+    if (remaining_secs_ <= 0) {
+        setQrState(QrState::TimedOut);
+    } else if (remaining_secs_ <= kWarningSeconds) {
+        setQrState(QrState::Warning);
+    }
+}
+
+void ScreenExitHourly::updateTimerLabel() {
+    if (!lbl_countdown_) return;
+    const int s = qMax(0, remaining_secs_);
+    lbl_countdown_->setText(QString("%1:%2 ms")
+        .arg(s / 60, 2, 10, QChar('0'))
+        .arg(s % 60, 2, 10, QChar('0')));
+}
+
+void ScreenExitHourly::setQrState(QrState s) {
+    state_ = s;
+
+    auto applyText = [&](const QString& msg, const QString& msg_color,
+                          const QString& timer_color) {
+        if (lbl_message_) {
+            lbl_message_->setText(msg);
+            lbl_message_->setStyleSheet(
+                QString("color:%1;font-size:26px;font-weight:800;background:transparent;"
+                        "font-family:\"Inter\",\"Helvetica Neue\",Arial;")
+                .arg(msg_color));
+        }
+        if (lbl_countdown_) {
+            lbl_countdown_->setStyleSheet(
+                QString("color:%1;font-size:42px;font-weight:800;background:transparent;"
+                        "font-family:\"Inter\",\"Helvetica Neue\",Arial;")
+                .arg(timer_color));
+        }
+    };
+
+    // Clear any previous QR effect — Qt only allows one effect per widget.
+    if (qr_widget_) qr_widget_->setGraphicsEffect(nullptr);
+    if (qr_overlay_) qr_overlay_->hide();
+
+    switch (s) {
+        case QrState::Normal:
+            applyText("Quý khách có thể bỏ tiền ở ngăn dưới\nhoặc quét QR Code",
+                       theme::V2_SUCCESS, theme::V2_TEXT_DARK);
+            break;
+        case QrState::Warning:
+            applyText("Quý khách có thể bỏ tiền ở ngăn dưới\nhoặc quét QR Code",
+                       theme::V2_SUCCESS, theme::V2_DANGER);
+            break;
+        case QrState::TimedOut:
+            applyText("Phiên đăng nhập đã hết hạn.\nTự động reset trong 5s.",
+                       theme::V2_DANGER, theme::V2_DANGER);
+            if (qr_widget_) {
+                auto* eff = new QGraphicsOpacityEffect(qr_widget_);
+                eff->setOpacity(0.45);
+                qr_widget_->setGraphicsEffect(eff);
+            }
+            if (qr_overlay_ && qr_box_) {
+                const int x = (qr_box_->width()  - qr_overlay_->width())  / 2;
+                const int y = (qr_box_->height() - qr_overlay_->height()) / 2;
+                qr_overlay_->move(qMax(x, 0), qMax(y, 0));
+                qr_overlay_->show();
+                qr_overlay_->raise();
+            }
+            break;
+    }
 }

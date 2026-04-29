@@ -9,11 +9,13 @@
 
 class QVBoxLayout;
 class TopBar;
+class Footer;
 class ScreenEntryIdle;
 class ScreenEntryOpen;
 class ScreenExitHourly;
 class ScreenExitMonthly;
 class ScreenPaymentSuccess;
+class ScreenPaymentFailed;
 class ScreenDisplayMessage;
 
 class MainWindow : public QMainWindow {
@@ -30,7 +32,8 @@ public:
     // countdown_seconds: 0 = use device default (15 s)
     void showPaymentSuccess(const QString& plate, quint32 amount,
                              const QString& method = "QR Pay",
-                             int countdown_seconds = 15);
+                             int countdown_seconds = 5);
+    void showPaymentFailed(int countdown_seconds = 5);
     void showDisplayMessage(const DisplayMessage& dm);
 
     // Status updates (no-op — status bar removed)
@@ -53,6 +56,7 @@ private:
     QWidget*         central_  = nullptr;
     QVBoxLayout*     vbox_     = nullptr;
     TopBar*          topbar_   = nullptr;
+    Footer*          footer_   = nullptr;
     QStackedWidget*  stack_    = nullptr;
 
     ScreenEntryIdle*       screen_idle_     = nullptr;
@@ -60,12 +64,13 @@ private:
     ScreenExitHourly*      screen_exit_h_   = nullptr;
     ScreenExitMonthly*     screen_exit_m_   = nullptr;
     ScreenPaymentSuccess*  screen_success_  = nullptr;
+    ScreenPaymentFailed*   screen_failed_   = nullptr;
     ScreenDisplayMessage*  screen_display_  = nullptr;
 
     QLabel*  notif_label_ = nullptr;
     QTimer*  notif_timer_ = nullptr;
 
-    enum class Screen { Idle, EntryOpen, ExitHourly, ExitMonthly, Success, DisplayMessage };
+    enum class Screen { Idle, EntryOpen, ExitHourly, ExitMonthly, Success, Failed, DisplayMessage };
     Screen current_screen_ = Screen::Idle;
     Screen previous_screen_before_display_ = Screen::Idle;
 };

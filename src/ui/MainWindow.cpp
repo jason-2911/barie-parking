@@ -6,7 +6,9 @@
 #include "ui/screens/ScreenExitMonthly.h"
 #include "ui/screens/ScreenDisplayMessage.h"
 #include "ui/screens/ScreenPaymentSuccess.h"
+#include "ui/screens/ScreenPaymentFailed.h"
 #include "ui/widgets/TopBar.h"
+#include "ui/widgets/Footer.h"
 
 #include <QVBoxLayout>
 #include <QLabel>
@@ -46,11 +48,15 @@ void MainWindow::buildLayout() {
     stack_->setStyleSheet("background:transparent;border:none;");
     vbox_->addWidget(stack_, 1);
 
+    footer_ = new Footer(central_);
+    vbox_->addWidget(footer_);
+
     screen_idle_        = new ScreenEntryIdle(cfg_);
     screen_entry_open_  = new ScreenEntryOpen(cfg_);
     screen_exit_h_      = new ScreenExitHourly(cfg_);
     screen_exit_m_      = new ScreenExitMonthly(cfg_);
     screen_success_     = new ScreenPaymentSuccess;
+    screen_failed_      = new ScreenPaymentFailed;
     screen_display_     = new ScreenDisplayMessage;
 
     stack_->addWidget(screen_idle_);        // 0
@@ -58,15 +64,20 @@ void MainWindow::buildLayout() {
     stack_->addWidget(screen_exit_h_);      // 2
     stack_->addWidget(screen_exit_m_);      // 3
     stack_->addWidget(screen_success_);     // 4
-    stack_->addWidget(screen_display_);     // 5
+    stack_->addWidget(screen_failed_);      // 5
+    stack_->addWidget(screen_display_);     // 6
 
     connect(screen_idle_,    &ScreenEntryIdle::callSupportRequested,
             this, &MainWindow::callSupportRequested);
     connect(screen_exit_h_,  &ScreenExitHourly::callSupportRequested,
             this, &MainWindow::callSupportRequested);
+    connect(screen_exit_h_,  &ScreenExitHourly::sessionTimedOut,
+            this, &MainWindow::showIdle);
     connect(screen_exit_m_,  &ScreenExitMonthly::callSupportRequested,
             this, &MainWindow::callSupportRequested);
     connect(screen_success_, &ScreenPaymentSuccess::countdownExpired,
+            this, &MainWindow::showIdle);
+    connect(screen_failed_,  &ScreenPaymentFailed::countdownExpired,
             this, &MainWindow::showIdle);
     connect(screen_display_, &ScreenDisplayMessage::dismissed,
             this, &MainWindow::restoreAfterDisplayMessage);
@@ -96,9 +107,11 @@ void MainWindow::setupNotification() {
 // ── Screen transitions ────────────────────────────────────────────────────────
 
 void MainWindow::showIdle() {
-    // If leaving the success screen, cancel its countdown so a stale timer
-    // cannot fire showIdle() again over a fresh customer session.
+    // Cancel any running per-screen timers so they cannot fire late and
+    // overwrite a fresh customer session.
     if (current_screen_ == Screen::Success) screen_success_->stopCountdown();
+    if (current_screen_ == Screen::Failed)  screen_failed_->stopCountdown();
+    if (current_screen_ == Screen::ExitHourly) screen_exit_h_->stop();
     if (current_screen_ == Screen::DisplayMessage) screen_display_->stop();
     current_screen_ = Screen::Idle;
     stack_->setCurrentWidget(screen_idle_);
@@ -112,6 +125,8 @@ void MainWindow::showBarrierOpening(const QString& barrier_id,
 {
     Q_UNUSED(barrier_id)
     if (current_screen_ == Screen::Success) screen_success_->stopCountdown();
+    if (current_screen_ == Screen::Failed)  screen_failed_->stopCountdown();
+    if (current_screen_ == Screen::ExitHourly) screen_exit_h_->stop();
     if (current_screen_ == Screen::DisplayMessage) screen_display_->stop();
     current_screen_ = Screen::EntryOpen;
     screen_entry_open_->refresh();
@@ -120,8 +135,9 @@ void MainWindow::showBarrierOpening(const QString& barrier_id,
 }
 
 void MainWindow::showExitHourly(const VehicleInfo& vi) {
-    // New customer arrived — immediately preempt any running success countdown.
+    // New customer arrived — immediately preempt any running countdown.
     if (current_screen_ == Screen::Success) screen_success_->stopCountdown();
+    if (current_screen_ == Screen::Failed)  screen_failed_->stopCountdown();
     if (current_screen_ == Screen::DisplayMessage) screen_display_->stop();
     current_screen_ = Screen::ExitHourly;
     screen_exit_h_->setVehicleInfo(vi);
@@ -130,6 +146,8 @@ void MainWindow::showExitHourly(const VehicleInfo& vi) {
 
 void MainWindow::showExitMonthly(const VehicleInfo& vi) {
     if (current_screen_ == Screen::Success) screen_success_->stopCountdown();
+    if (current_screen_ == Screen::Failed)  screen_failed_->stopCountdown();
+    if (current_screen_ == Screen::ExitHourly) screen_exit_h_->stop();
     if (current_screen_ == Screen::DisplayMessage) screen_display_->stop();
     current_screen_ = Screen::ExitMonthly;
     screen_exit_m_->setVehicleInfo(vi);
@@ -141,10 +159,20 @@ void MainWindow::showPaymentSuccess(const QString& plate,
                                      const QString& method,
                                      int             countdown_seconds)
 {
+    if (current_screen_ == Screen::ExitHourly) screen_exit_h_->stop();
+    if (current_screen_ == Screen::Failed)     screen_failed_->stopCountdown();
     current_screen_ = Screen::Success;
     screen_success_->setResult(plate, amount, method);
-    screen_success_->startCountdown(countdown_seconds > 0 ? countdown_seconds : 15);
+    screen_success_->startCountdown(countdown_seconds > 0 ? countdown_seconds : 5);
     stack_->setCurrentWidget(screen_success_);
+}
+
+void MainWindow::showPaymentFailed(int countdown_seconds) {
+    if (current_screen_ == Screen::ExitHourly) screen_exit_h_->stop();
+    if (current_screen_ == Screen::Success)    screen_success_->stopCountdown();
+    current_screen_ = Screen::Failed;
+    screen_failed_->startCountdown(countdown_seconds > 0 ? countdown_seconds : 5);
+    stack_->setCurrentWidget(screen_failed_);
 }
 
 void MainWindow::showDisplayMessage(const DisplayMessage& dm) {
@@ -155,6 +183,10 @@ void MainWindow::showDisplayMessage(const DisplayMessage& dm) {
 
     if (current_screen_ == Screen::Success)
         screen_success_->stopCountdown();
+    if (current_screen_ == Screen::Failed)
+        screen_failed_->stopCountdown();
+    if (current_screen_ == Screen::ExitHourly)
+        screen_exit_h_->stop();
     if (current_screen_ == Screen::DisplayMessage)
         screen_display_->stop();
 
@@ -206,9 +238,7 @@ void MainWindow::restoreAfterDisplayMessage() {
             stack_->setCurrentWidget(screen_exit_m_);
             break;
         case Screen::Success:
-            stack_->setCurrentWidget(screen_idle_);
-            current_screen_ = Screen::Idle;
-            break;
+        case Screen::Failed:
         case Screen::DisplayMessage:
             stack_->setCurrentWidget(screen_idle_);
             current_screen_ = Screen::Idle;

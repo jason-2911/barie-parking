@@ -94,8 +94,14 @@ set(SOURCES
     src/ui/screens/ScreenExitHourly.cpp
     src/ui/screens/ScreenExitMonthly.cpp
     src/ui/widgets/TopBar.cpp
+    src/ui/widgets/TitleBar.cpp
+    src/ui/widgets/Footer.cpp
     src/ui/widgets/QRWidget.cpp
     src/ui/screens/ScreenPaymentSuccess.cpp
+    src/ui/screens/ScreenPaymentFailed.cpp
+
+    # Embedded resources (logos, etc.) — AUTORCC compiles this on build.
+    resources/resources.qrc
 )
 
 add_executable(parking_client ${SOURCES})
