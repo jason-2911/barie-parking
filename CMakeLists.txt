@@ -63,7 +63,6 @@ set(SOURCES
     src/app/Config.cpp
     src/app/DeviceId.cpp
     src/app/Logger.cpp
-    src/app/LocalBridge.cpp
     src/app/NetworkInit.cpp
 
     # mqtt
@@ -125,13 +124,11 @@ if(NOT APPLE)
 endif()
 
 # ── Self-test binary ──────────────────────────────────────────────────────
-# Exercises LocalBridge + Config + MessageFilter + Modbus bit layout end-to-
-# end with a mock barrier driver. No real MQTT / serial / UI — runs in CI
-# and on a laptop in ~50 ms.
+# Exercises Config + MessageFilter + Modbus bit layout end-to-end.
+# No real MQTT / serial / UI — runs in CI and on a laptop in ~50 ms.
 add_executable(parking_selftest
     tests/parking_selftest.cpp
     src/app/Config.cpp
-    src/app/LocalBridge.cpp
     src/types/MessageTypes.h
 )
 target_include_directories(parking_selftest PRIVATE

@@ -62,6 +62,21 @@ void BarrierManager::cancelTimers(FsmSlot& slot) {
     if (slot.safety_timer && slot.safety_timer->isActive()) slot.safety_timer->stop();
 }
 
+QString BarrierManager::resolveSensorBarrier(const QString& barrier_id) const {
+    // Direct routing: a sensor bound to a lane names its barrier explicitly.
+    if (!barrier_id.isEmpty() && fsm_.contains(barrier_id))
+        return barrier_id;
+    // Legacy single-lane: the sensor had no binding — fall back to the
+    // heuristic that picks the barrier furthest into the flow.
+    return activeBarrierForSensor();
+}
+
+int BarrierManager::clearDelayForBarrier(const QString& barrier_id) const {
+    if (const auto* s = cfg_.sensorForBarrier(barrier_id))
+        return s->clear_delay_ms;
+    return 1500;   // default when no sensor is bound to this lane
+}
+
 QString BarrierManager::activeBarrierForSensor() const {
     // Single-lane assumption: exactly one barrier waits for the sensor at a
     // time. If multiple are waiting we pick the one furthest into the flow,
@@ -82,7 +97,7 @@ QString BarrierManager::activeBarrierForSensor() const {
 
 // ── Init / polling ───────────────────────────────────────────────────────────
 
-void BarrierManager::init() {
+bool BarrierManager::init() {
     qInfo() << "[Barrier] initializing on" << cfg_.serial.barrier_port;
 
     driver_ = HardwareFactory::createBarrier(cfg_);
@@ -90,7 +105,7 @@ void BarrierManager::init() {
     if (err != BarrierDriverError::OK) {
         qCritical() << "[Barrier] driver open failed:"
                     << static_cast<int>(err);
-        return;
+        return false;
     }
 
     for (const auto& b : cfg_.barriers)
@@ -122,6 +137,7 @@ void BarrierManager::init() {
     poll_timer_ = new QTimer(this);
     connect(poll_timer_, &QTimer::timeout, this, &BarrierManager::pollStatus);
     poll_timer_->start(2000);
+    return true;
 }
 
 void BarrierManager::closeAll() {
@@ -215,10 +231,25 @@ void BarrierManager::enterWaiting(const QString& barrier_id) {
     qInfo() << "[Barrier]" << barrier_id << "→ WaitingVehicle";
     armSafety(barrier_id, slot);
 
-    // Edge case: sensor already sees the vehicle (car stopped on sensor
-    // before gate was even raised). Jump straight to Passing.
-    if (sensor_ && sensor_->isPresent()) {
-        enterPassing(barrier_id);
+    // Deferred pre-presence check: do NOT call isPresent() immediately here.
+    // At startup the barrier arm is DOWN and often physically blocks the
+    // sensor beam — isPresent() would return true even with no vehicle, and
+    // the gate would jump straight to Passing on every open.
+    // Instead, wait 2 s for the arm to clear, then do a live hardware re-read
+    // (pollLive). If a vehicle was genuinely pre-present the read will return
+    // true; normal edge events still fire at any time and are handled by
+    // onVehiclePresent() regardless of this timer.
+    if (sensor_) {
+        const QString id = barrier_id;
+        QTimer::singleShot(2000, this, [this, id]() {
+            if (!fsm_.contains(id) || fsm_[id].state != State::WaitingVehicle) return;
+            sensor_->pollLive(id);
+            if (sensor_->isPresent(id)) {
+                qInfo() << "[Barrier]" << id
+                        << "deferred poll: vehicle pre-present, entering Passing";
+                enterPassing(id);
+            }
+        });
     }
 
     if (cfg_.self_test.enabled && cfg_.self_test.auto_vehicle_sensor) {
@@ -227,12 +258,12 @@ void BarrierManager::enterWaiting(const QString& barrier_id) {
             if (!fsm_.contains(id)) return;
             const State s = fsm_[id].state;
             if (s == State::WaitingVehicle || s == State::ClearDelay)
-                onVehiclePresent();
+                onVehiclePresent(id);
         });
         QTimer::singleShot(cfg_.self_test.vehicle_clear_delay_ms, this, [this, id]() {
             if (!fsm_.contains(id)) return;
             if (fsm_[id].state == State::Passing)
-                onVehicleCleared();
+                onVehicleCleared(id);
         });
     }
 }
@@ -240,8 +271,11 @@ void BarrierManager::enterWaiting(const QString& barrier_id) {
 void BarrierManager::enterPassing(const QString& barrier_id) {
     FsmSlot& slot = fsm_[barrier_id];
     slot.state = State::Passing;
-    if (slot.safety_timer && slot.safety_timer->isActive())
-        slot.safety_timer->stop();   // vehicle confirmed — safety fallback no longer needed
+    // Restart (not stop) the safety timer. The vehicle must now clear within
+    // auto_close_sec. If the sensor never clears — stuck vehicle, sensor
+    // fault, or startup false-positive — the gate force-closes anyway.
+    if (slot.safety_timer && slot.auto_close_sec > 0)
+        slot.safety_timer->start(slot.auto_close_sec * 1000);
     qInfo() << "[Barrier]" << barrier_id << "→ Passing";
     emit vehiclePassing(barrier_id);
 }
@@ -249,8 +283,9 @@ void BarrierManager::enterPassing(const QString& barrier_id) {
 void BarrierManager::enterClearDelay(const QString& barrier_id) {
     FsmSlot& slot = fsm_[barrier_id];
     slot.state = State::ClearDelay;
+    const int clear_delay_ms = clearDelayForBarrier(barrier_id);
     qInfo() << "[Barrier]" << barrier_id << "→ ClearDelay"
-            << cfg_.vehicle_sensor.clear_delay_ms << "ms";
+            << clear_delay_ms << "ms";
     emit vehiclePassed(barrier_id);
 
     if (!slot.clear_timer) {
@@ -263,11 +298,12 @@ void BarrierManager::enterClearDelay(const QString& barrier_id) {
             enterLowering(id);
         });
     }
-    slot.clear_timer->start(cfg_.vehicle_sensor.clear_delay_ms);
+    slot.clear_timer->start(clear_delay_ms);
 }
 
 void BarrierManager::enterLowering(const QString& barrier_id) {
     FsmSlot& slot = fsm_[barrier_id];
+    cancelTimers(slot);   // stop safety/clear timers before they fire during descent
     slot.state = State::Lowering;
     qInfo() << "[Barrier]" << barrier_id << "→ Lowering";
     emit autoClosed(barrier_id);
@@ -296,10 +332,10 @@ void BarrierManager::armSafety(const QString& barrier_id, FsmSlot& slot) {
         const QString id = barrier_id;
         connect(slot.safety_timer, &QTimer::timeout, this, [this, id]() {
             if (!fsm_.contains(id)) return;
-            auto s = fsm_[id].state;
-            if (s != State::WaitingVehicle) return;  // vehicle arrived, no-op
+            const auto s = fsm_[id].state;
+            if (s != State::WaitingVehicle && s != State::Passing) return;
             qWarning() << "[Barrier]" << id
-                       << "safety timeout — no vehicle detected, forcing close";
+                       << "safety timeout — forcing close (state=" << stateName(s) << ")";
             rawLower(id);
             enterLowering(id);
         });
@@ -309,8 +345,8 @@ void BarrierManager::armSafety(const QString& barrier_id, FsmSlot& slot) {
 
 // ── Sensor callbacks ─────────────────────────────────────────────────────────
 
-void BarrierManager::onVehiclePresent() {
-    const QString id = activeBarrierForSensor();
+void BarrierManager::onVehiclePresent(const QString& barrier_id) {
+    const QString id = resolveSensorBarrier(barrier_id);
     if (id.isEmpty()) {
         qDebug() << "[Barrier] sensor: present — no active barrier, ignored";
         return;
@@ -322,8 +358,8 @@ void BarrierManager::onVehiclePresent() {
     }
 }
 
-void BarrierManager::onVehicleCleared() {
-    const QString id = activeBarrierForSensor();
+void BarrierManager::onVehicleCleared(const QString& barrier_id) {
+    const QString id = resolveSensorBarrier(barrier_id);
     if (id.isEmpty()) return;
     FsmSlot& slot = fsm_[id];
     if (slot.state == State::Passing) {
@@ -335,14 +371,45 @@ void BarrierManager::onVehicleCleared() {
 
 void BarrierManager::rawRaise(const QString& barrier_id) {
     if (!driver_) return;
-    driver_->raise(modbusAddrFor(barrier_id));
+    const uint8_t addr = modbusAddrFor(barrier_id);
+
+    // One immediate retry on transient Modbus errors (CRC, timeout).
+    // Do NOT update position or state if the command ultimately fails —
+    // a gate that didn't actually move must not be treated as open.
+    BarrierDriverError err = driver_->raise(addr);
+    if (err != BarrierDriverError::OK) {
+        qWarning() << "[Barrier] raise" << barrier_id
+                   << "failed (err=" << static_cast<int>(err) << "), retrying once";
+        err = driver_->raise(addr);
+    }
+    if (err != BarrierDriverError::OK) {
+        qCritical() << "[Barrier] raise" << barrier_id
+                    << "failed after retry (err=" << static_cast<int>(err) << ")";
+        emit faultDetected(barrier_id,
+                           QString("raise failed err=%1").arg(static_cast<int>(err)));
+        return;
+    }
     positions_[barrier_id] = "up";
     emit statusChanged(barrier_id, "up");
 }
 
 void BarrierManager::rawLower(const QString& barrier_id) {
     if (!driver_) return;
-    driver_->lower(modbusAddrFor(barrier_id));
+    const uint8_t addr = modbusAddrFor(barrier_id);
+
+    BarrierDriverError err = driver_->lower(addr);
+    if (err != BarrierDriverError::OK) {
+        qWarning() << "[Barrier] lower" << barrier_id
+                   << "failed (err=" << static_cast<int>(err) << "), retrying once";
+        err = driver_->lower(addr);
+    }
+    if (err != BarrierDriverError::OK) {
+        qCritical() << "[Barrier] lower" << barrier_id
+                    << "failed after retry (err=" << static_cast<int>(err) << ")";
+        emit faultDetected(barrier_id,
+                           QString("lower failed err=%1").arg(static_cast<int>(err)));
+        return;
+    }
     positions_[barrier_id] = "down";
     emit statusChanged(barrier_id, "down");
 }

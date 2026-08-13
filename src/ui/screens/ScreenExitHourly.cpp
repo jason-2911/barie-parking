@@ -16,11 +16,8 @@
 namespace {
 
 // ── Layout / behaviour constants ─────────────────────────────────────────────
-constexpr int kWarningSeconds      = 30;   // timer turns red at ≤30s left
-constexpr int kTimedOutHoldSeconds = 5;    // QrState::TimedOut hold time
-constexpr int kCardRadius          = 24;
-constexpr int kQrBoxRadius         = 16;
-constexpr int kLeftCardWidth       = 445;
+constexpr int kWarningSeconds      = 30;
+constexpr int kTimedOutHoldSeconds = 5;
 
 // Soft drop shadow shared between left and right cards.
 QGraphicsDropShadowEffect* makeCardShadow(QObject* parent) {
@@ -29,12 +26,6 @@ QGraphicsDropShadowEffect* makeCardShadow(QObject* parent) {
     eff->setOffset(0, 10);
     eff->setColor(QColor(0, 0, 0, 36));
     return eff;
-}
-
-// Wrap a card body in a rounded white shell.
-QString cardSheet() {
-    return QString("background:%1;border-radius:%2px;")
-            .arg(theme::BG_WHITE).arg(kCardRadius);
 }
 
 // Refresh-icon overlay shown over the QR when the session times out.
@@ -96,6 +87,15 @@ QString formatDuration(int minutes) {
 ScreenExitHourly::ScreenExitHourly(const Config& cfg, QWidget* parent)
     : QWidget(parent), cfg_(cfg)
 {
+    // Scale everything proportionally to the configured resolution.
+    // Baseline design is 1920×1080; use the smaller axis ratio so nothing clips.
+    const double scale = qMin(cfg_.ui.width  / 1920.0,
+                              cfg_.ui.height / 1080.0);
+    auto sc = [&](int v) { return qRound(v * scale); };
+
+    msg_font_px_   = sc(26);
+    timer_font_px_ = sc(42);
+
     setStyleSheet(QString("background:%1;").arg(theme::V2_BG_PAGE));
 
     auto* root = new QVBoxLayout(this);
@@ -104,30 +104,34 @@ ScreenExitHourly::ScreenExitHourly(const Config& cfg, QWidget* parent)
 
     // ── Title bar ─────────────────────────────────────────────────────────
     auto* title = new TitleBar(TitleBar::Variant::Payment, this);
+    title->setFixedHeight(sc(78));
     root->addWidget(title);
 
     // ── Body ──────────────────────────────────────────────────────────────
     auto* body = new QWidget;
     body->setStyleSheet(QString("background:%1;").arg(theme::V2_BG_PAGE));
     auto* body_grid = new QGridLayout(body);
-    body_grid->setContentsMargins(52, 26, 52, 26);
-    body_grid->setHorizontalSpacing(26);
+    body_grid->setContentsMargins(sc(52), sc(26), sc(52), sc(26));
+    body_grid->setHorizontalSpacing(sc(26));
     body_grid->setVerticalSpacing(0);
     body_grid->setColumnStretch(0, 0);
     body_grid->setColumnStretch(1, 1);
     root->addWidget(body, 1);
+
+    const QString card_sheet = QString("background:%1;border-radius:%2px;")
+                                .arg(theme::BG_WHITE).arg(sc(24));
 
     // ════════════════════════════════════════════════════════════════════
     // LEFT CARD — vehicle / payment info
     // ════════════════════════════════════════════════════════════════════
     auto* left = new QWidget;
     left->setObjectName("leftCard");
-    left->setFixedWidth(kLeftCardWidth);
-    left->setStyleSheet(QString("QWidget#leftCard {%1}").arg(cardSheet()));
+    left->setFixedWidth(sc(445));
+    left->setStyleSheet(QString("QWidget#leftCard {%1}").arg(card_sheet));
     left->setGraphicsEffect(makeCardShadow(left));
 
     auto* lv = new QVBoxLayout(left);
-    lv->setContentsMargins(52, 48, 52, 48);
+    lv->setContentsMargins(sc(52), sc(48), sc(52), sc(48));
     lv->setSpacing(0);
 
     auto addLabelValue = [&](const QString& label_text,
@@ -136,10 +140,10 @@ ScreenExitHourly::ScreenExitHourly(const Config& cfg, QWidget* parent)
                               const QString& value_color,
                               int value_size,
                               int top_margin) {
-        if (top_margin > 0) lv->addSpacing(top_margin);
-        lv->addWidget(makeLabel(label_text, 24, 700, theme::V2_TEXT_LABEL));
-        lv->addSpacing(8);
-        auto* v = makeLabel(value_text, value_size, 800, value_color);
+        if (top_margin > 0) lv->addSpacing(sc(top_margin));
+        lv->addWidget(makeLabel(label_text, sc(24), 700, theme::V2_TEXT_LABEL));
+        lv->addSpacing(sc(8));
+        auto* v = makeLabel(value_text, sc(value_size), 800, value_color);
         if (value_out) *value_out = v;
         lv->addWidget(v);
     };
@@ -153,43 +157,43 @@ ScreenExitHourly::ScreenExitHourly(const Config& cfg, QWidget* parent)
     addLabelValue("SỐ TIỀN CÒN THIẾU", "0 VNĐ", &lbl_amount_remain_,
                   theme::V2_TEXT_DARK, 36, 28);
 
-    lv->addSpacing(28);
+    lv->addSpacing(sc(28));
     auto* divider = new QFrame;
     divider->setFixedHeight(2);
     divider->setStyleSheet(QString("background:%1;border:none;")
                             .arg(theme::V2_DIVIDER));
     lv->addWidget(divider);
-    lv->addSpacing(24);
+    lv->addSpacing(sc(24));
 
     // Time row — two columns (entry / exit)
     auto* time_row = new QWidget;
     time_row->setStyleSheet("background:transparent;");
     auto* tr_grid = new QGridLayout(time_row);
     tr_grid->setContentsMargins(0, 0, 0, 0);
-    tr_grid->setHorizontalSpacing(24);
-    tr_grid->setVerticalSpacing(4);
+    tr_grid->setHorizontalSpacing(sc(24));
+    tr_grid->setVerticalSpacing(sc(4));
     tr_grid->setColumnStretch(0, 1);
     tr_grid->setColumnStretch(1, 1);
 
-    tr_grid->addWidget(makeLabel("GIỜ VÀO", 22, 700, theme::V2_TEXT_LABEL), 0, 0);
-    tr_grid->addWidget(makeLabel("GIỜ RA",  22, 700, theme::V2_TEXT_LABEL), 0, 1);
+    tr_grid->addWidget(makeLabel("GIỜ VÀO", sc(22), 700, theme::V2_TEXT_LABEL), 0, 0);
+    tr_grid->addWidget(makeLabel("GIỜ RA",  sc(22), 700, theme::V2_TEXT_LABEL), 0, 1);
 
-    lbl_entry_time_ = makeLabel("--:--:--", 26, 800, theme::V2_TEXT_DARK);
-    lbl_exit_time_  = makeLabel("--:--:--", 26, 800, theme::V2_TEXT_DARK);
+    lbl_entry_time_ = makeLabel("--:--:--", sc(26), 800, theme::V2_TEXT_DARK);
+    lbl_exit_time_  = makeLabel("--:--:--", sc(26), 800, theme::V2_TEXT_DARK);
     tr_grid->addWidget(lbl_entry_time_, 1, 0);
     tr_grid->addWidget(lbl_exit_time_,  1, 1);
 
-    lbl_entry_date_ = makeLabel("--/--/----", 20, 600, theme::V2_TEXT_MUTED);
-    lbl_exit_date_  = makeLabel("--/--/----", 20, 600, theme::V2_TEXT_MUTED);
+    lbl_entry_date_ = makeLabel("--/--/----", sc(20), 600, theme::V2_TEXT_MUTED);
+    lbl_exit_date_  = makeLabel("--/--/----", sc(20), 600, theme::V2_TEXT_MUTED);
     tr_grid->addWidget(lbl_entry_date_, 2, 0);
     tr_grid->addWidget(lbl_exit_date_,  2, 1);
 
     lv->addWidget(time_row);
 
-    lv->addSpacing(28);
-    lv->addWidget(makeLabel("TỔNG THỜI GIAN", 22, 700, theme::V2_TEXT_LABEL));
-    lv->addSpacing(12);
-    lbl_duration_ = makeLabel("00 giờ 00 phút", 28, 800, theme::V2_TEXT_DARK);
+    lv->addSpacing(sc(28));
+    lv->addWidget(makeLabel("TỔNG THỜI GIAN", sc(22), 700, theme::V2_TEXT_LABEL));
+    lv->addSpacing(sc(12));
+    lbl_duration_ = makeLabel("00 giờ 00 phút", sc(28), 800, theme::V2_TEXT_DARK);
     lv->addWidget(lbl_duration_);
 
     lv->addStretch();
@@ -201,25 +205,25 @@ ScreenExitHourly::ScreenExitHourly(const Config& cfg, QWidget* parent)
     // ════════════════════════════════════════════════════════════════════
     auto* right = new QWidget;
     right->setObjectName("rightCard");
-    right->setStyleSheet(QString("QWidget#rightCard {%1}").arg(cardSheet()));
+    right->setStyleSheet(QString("QWidget#rightCard {%1}").arg(card_sheet));
     right->setGraphicsEffect(makeCardShadow(right));
 
     auto* rv = new QVBoxLayout(right);
-    rv->setContentsMargins(56, 48, 56, 40);
+    rv->setContentsMargins(sc(56), sc(48), sc(56), sc(40));
     rv->setSpacing(0);
 
     lbl_message_ = makeLabel(
         "Quý khách có thể bỏ tiền ở ngăn dưới\nhoặc quét QR Code",
-        26, 800, theme::V2_SUCCESS, Qt::AlignCenter);
+        msg_font_px_, 800, theme::V2_SUCCESS, Qt::AlignCenter);
     lbl_message_->setWordWrap(true);
     rv->addWidget(lbl_message_);
-    rv->addSpacing(16);
+    rv->addSpacing(sc(16));
 
-    lbl_countdown_ = makeLabel("03:00 ms", 42, 800, theme::V2_TEXT_DARK,
-                                Qt::AlignCenter);
+    lbl_countdown_ = makeLabel("05:00", timer_font_px_, 800,
+                                theme::V2_TEXT_DARK, Qt::AlignCenter);
     rv->addWidget(lbl_countdown_);
 
-    rv->addSpacing(22);
+    rv->addSpacing(sc(22));
 
     // QR box
     qr_box_ = new QFrame;
@@ -227,12 +231,12 @@ ScreenExitHourly::ScreenExitHourly(const Config& cfg, QWidget* parent)
     qr_box_->setStyleSheet(
         QString("QFrame#qrBox {background:%1;border:2px solid %2;border-radius:%3px;}")
             .arg(theme::BG_WHITE, theme::V2_QR_BORDER)
-            .arg(kQrBoxRadius));
-    qr_box_->setMinimumSize(420, 420);
+            .arg(sc(16)));
+    qr_box_->setMinimumSize(sc(420), sc(420));
     qr_box_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
 
     auto* qr_layout = new QVBoxLayout(qr_box_);
-    qr_layout->setContentsMargins(20, 20, 20, 20);
+    qr_layout->setContentsMargins(sc(20), sc(20), sc(20), sc(20));
     qr_layout->setSpacing(0);
 
     qr_widget_ = new QRWidget;
@@ -244,10 +248,10 @@ ScreenExitHourly::ScreenExitHourly(const Config& cfg, QWidget* parent)
 
     rv->addWidget(qr_box_, 1, Qt::AlignHCenter);
 
-    rv->addSpacing(22);
+    rv->addSpacing(sc(22));
     auto* hint = makeLabel(
         "Khi hết giờ hệ thống sẽ tự động reset phiên và đóng QR.",
-        20, 700, theme::V2_TEXT_MUTED, Qt::AlignCenter);
+        sc(20), 700, theme::V2_TEXT_MUTED, Qt::AlignCenter);
     hint->setWordWrap(true);
     rv->addWidget(hint);
 
@@ -332,7 +336,7 @@ void ScreenExitHourly::onTick() {
 void ScreenExitHourly::updateTimerLabel() {
     if (!lbl_countdown_) return;
     const int s = qMax(0, remaining_secs_);
-    lbl_countdown_->setText(QString("%1:%2 ms")
+    lbl_countdown_->setText(QString("%1:%2")
         .arg(s / 60, 2, 10, QChar('0'))
         .arg(s % 60, 2, 10, QChar('0')));
 }
@@ -345,15 +349,15 @@ void ScreenExitHourly::setQrState(QrState s) {
         if (lbl_message_) {
             lbl_message_->setText(msg);
             lbl_message_->setStyleSheet(
-                QString("color:%1;font-size:26px;font-weight:800;background:transparent;"
+                QString("color:%1;font-size:%2px;font-weight:800;background:transparent;"
                         "font-family:\"Inter\",\"Helvetica Neue\",Arial;")
-                .arg(msg_color));
+                .arg(msg_color).arg(msg_font_px_));
         }
         if (lbl_countdown_) {
             lbl_countdown_->setStyleSheet(
-                QString("color:%1;font-size:42px;font-weight:800;background:transparent;"
+                QString("color:%1;font-size:%2px;font-weight:800;background:transparent;"
                         "font-family:\"Inter\",\"Helvetica Neue\",Arial;")
-                .arg(timer_color));
+                .arg(timer_color).arg(timer_font_px_));
         }
     };
 

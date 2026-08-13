@@ -36,13 +36,14 @@
   ],
   "serial": {
     "barrier_port": "/dev/ttyUSB0",
-    "barrier_baud": 9600,
-    "nv9_port": "/dev/ttyUSB1"
+    "barrier_baud": 19200,
+    "nv9_port": "/dev/ttyACM0"
   },
   "audio": {
     "sound_dir": "resources/sounds",
     "volume": 90,
     "sounds": {
+      "system_ready":    "system_ready.wav",
       "open_entry":      "open_entry.wav",
       "open_exit":       "open_exit.wav",
       "payment_success": "payment_success.wav",
@@ -54,13 +55,13 @@
   },
   "ui": {
     "fullscreen": true,
-    "width": 1920,
-    "height": 1080,
+    "width": 1440,
+    "height": 900,
     "payment_timeout_seconds": 300,
     "style": "dark"
   },
   "logging": {
-    "path": "/var/log/parking/parking.log",
+    "path": "/usr/local/bin/parking/log/parking.log",
     "max_size_mb": 10,
     "max_archives": 5,
     "also_stderr": true

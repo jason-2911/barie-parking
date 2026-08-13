@@ -9,11 +9,12 @@ class QNetworkReply;
 /**
  * QRWidget — shows a VN payment QR code in the hourly-payment screen.
  *
- * Two rendering modes, picked from the URL passed to setUrl():
- *   - "http(s)://…" → fetch the PNG from the server (VietQR image hosted
- *                      on our HTTPS endpoint) and blit it onto the card.
- *   - anything else → qrencode the string locally. Kept as a fallback
- *                      for dev setups without a QR backend.
+ * Three rendering modes, picked from the string passed to setUrl():
+ *   - "http(s)://…"           → fetch the PNG from the server (VietQR
+ *                                image endpoint) and blit it onto the card.
+ *   - "data:image/…;base64,…" → decode inline base64 PNG/JPEG and render.
+ *   - anything else           → qrencode the string locally (VietQR EMV
+ *                                payload, MoMo deep-link, etc.).
  *
  * The widget is always square (heightForWidth = width), so neither the
  * rendered QR nor the downloaded PNG ever gets stretched/cropped.
@@ -47,7 +48,7 @@ private:
 
     QString                url_;
     bool                   has_qr_   = false;
-    bool                   is_image_ = false;   // `url_` is http(s)://…
+    bool                   is_image_ = false;   // http(s):// or data:image/…
     QImage                 image_;               // decoded PNG (when is_image_)
     QNetworkAccessManager* net_      = nullptr;
     QNetworkReply*         pending_  = nullptr;

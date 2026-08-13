@@ -89,10 +89,6 @@ void NetworkInit::finish(bool connected, const QString& cc, const QString& tz)
         // Set for this process and all child processes.
         qputenv("TZ", apply_tz.toUtf8());
         ::tzset();
-
-        // Best-effort system-level set (only works if running as root or with
-        // the appropriate polkit rule; failure is non-fatal).
-        QProcess::startDetached("timedatectl", {"set-timezone", apply_tz});
     }
 
     emit done(connected, cc, tz);

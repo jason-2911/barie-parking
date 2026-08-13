@@ -159,10 +159,22 @@ static speed_t baud_to_speed(int baud) {
         case 9600:   return B9600;
         case 19200:  return B19200;
         case 38400:  return B38400;
+        case 57600:  return B57600;
         case 115200: return B115200;
         default:     return B9600;
     }
 }
+
+// Assert or de-assert RTS (DE/RE pin on MAX485 transceiver).
+// Returns 0 on success, -1 on ioctl failure.
+static int rtsSet(int fd, bool assert_rts) {
+    int flags = 0;
+    if (ioctl(fd, TIOCMGET, &flags) < 0) return -1;
+    if (assert_rts) flags |= TIOCM_RTS;
+    else            flags &= ~TIOCM_RTS;
+    return ioctl(fd, TIOCMSET, &flags) < 0 ? -1 : 0;
+}
+
 
 BarrierDriverError BarrierControllerModbus::open() {
     if (fd_ >= 0) return BarrierDriverError::OK;
@@ -193,6 +205,7 @@ BarrierDriverError BarrierControllerModbus::open() {
         return BarrierDriverError::IO_ERROR;
     }
     tcflush(fd_, TCIOFLUSH);
+    rtsSet(fd_, false);  // adapter starts in receive mode
     qInfo() << "[Barrier] opened" << port_ << "@" << baud_ << "baud";
     return BarrierDriverError::OK;
 }
@@ -213,29 +226,43 @@ BarrierControllerModbus::serialWrite(const uint8_t* data, size_t len) {
 }
 
 BarrierDriverError
-BarrierControllerModbus::serialRead(uint8_t* buf, size_t len,
+BarrierControllerModbus::serialRead(uint8_t* buf, size_t max_len,
                                      int timeout_ms, size_t& read_out) {
     if (fd_ < 0) return BarrierDriverError::NOT_OPEN;
     read_out = 0;
     auto deadline = std::chrono::steady_clock::now()
                   + std::chrono::milliseconds(timeout_ms);
 
-    while (read_out < len) {
+    while (read_out < max_len) {
         auto now = std::chrono::steady_clock::now();
-        if (now >= deadline) return BarrierDriverError::TIMEOUT;
+        if (now >= deadline) break;
 
         auto remaining_us = std::chrono::duration_cast<std::chrono::microseconds>(
                                 deadline - now).count();
         fd_set rfds; FD_ZERO(&rfds); FD_SET(fd_, &rfds);
         struct timeval tv{0, static_cast<suseconds_t>(remaining_us)};
         int sel = select(fd_ + 1, &rfds, nullptr, nullptr, &tv);
-        if (sel <= 0) return BarrierDriverError::TIMEOUT;
+        if (sel < 0 && errno == EINTR) continue;
+        if (sel <= 0) break;
 
-        ssize_t r = ::read(fd_, buf + read_out, len - read_out);
-        if (r > 0) read_out += r;
-        else if (r < 0 && errno != EAGAIN) return BarrierDriverError::IO_ERROR;
+        ssize_t r = ::read(fd_, buf + read_out, max_len - read_out);
+        if (r > 0) {
+            read_out += (size_t)r;
+            /*
+             * Modbus RTU inter-frame gap: after receiving a chunk, wait up
+             * to 10 ms for more bytes. Silence means the frame is complete.
+             * This handles adapters that deliver the response in bursts and
+             * avoids blocking for the full timeout on short frames.
+             */
+            struct timeval ift{0, 10000};
+            fd_set rfd2; FD_ZERO(&rfd2); FD_SET(fd_, &rfd2);
+            if (select(fd_ + 1, &rfd2, nullptr, nullptr, &ift) <= 0)
+                break;  // no more bytes within gap — frame complete
+        } else if (r < 0 && errno != EAGAIN) {
+            return BarrierDriverError::IO_ERROR;
+        }
     }
-    return BarrierDriverError::OK;
+    return (read_out > 0) ? BarrierDriverError::OK : BarrierDriverError::TIMEOUT;
 }
 
 void BarrierControllerModbus::serialFlush() {
@@ -245,24 +272,46 @@ void BarrierControllerModbus::serialFlush() {
 BarrierDriverError
 BarrierControllerModbus::sendCoil(uint8_t slave, uint16_t coil, bool on) {
     std::lock_guard<std::mutex> lock(bus_mutex_);
-    uint8_t frame[8];
-    frame[0] = slave;
-    frame[1] = MB_FC_WRITE_SINGLE_COIL;
-    frame[2] = coil >> 8;
-    frame[3] = coil & 0xFF;
-    frame[4] = on ? 0xFF : 0x00;
-    frame[5] = 0x00;
-    uint16_t crc = crc16(frame, 6);
-    frame[6] = crc & 0xFF;
-    frame[7] = crc >> 8;
+
+    uint8_t req[8];
+    req[0] = slave;
+    req[1] = MB_FC_WRITE_SINGLE_COIL;
+    req[2] = static_cast<uint8_t>(coil >> 8);
+    req[3] = static_cast<uint8_t>(coil & 0xFF);
+    req[4] = on ? 0xFF : 0x00;
+    req[5] = 0x00;
+    uint16_t crc = crc16(req, 6);
+    req[6] = static_cast<uint8_t>(crc & 0xFF);
+    req[7] = static_cast<uint8_t>(crc >> 8);
 
     serialFlush();
-    auto err = serialWrite(frame, 8);
+
+    rtsSet(fd_, true);
+    usleep(1000);
+    auto err = serialWrite(req, sizeof(req));
+    tcdrain(fd_);
+    rtsSet(fd_, false);
+    usleep(1000);
     if (err != BarrierDriverError::OK) return err;
 
     uint8_t resp[8]; size_t got = 0;
-    err = serialRead(resp, 8, 500, got);
-    if (err != BarrierDriverError::OK || got != 8) return err;
+    err = serialRead(resp, sizeof(resp), 500, got);
+    if (err != BarrierDriverError::OK) return err;
+    if (got < sizeof(req)) return BarrierDriverError::TIMEOUT;
+
+    // CRC validation
+    uint16_t crc_recv = (static_cast<uint16_t>(resp[got - 1]) << 8) | resp[got - 2];
+    if (crc_recv != crc16(resp, got - 2)) return BarrierDriverError::CRC_MISMATCH;
+
+    // Slave ID check
+    if (resp[0] != slave) return BarrierDriverError::SLAVE_NOT_FOUND;
+
+    // Modbus exception response (FC bit 7 set)
+    if (resp[1] & 0x80) return BarrierDriverError::DEVICE_FAULT;
+
+    // FC05 must echo the first 6 bytes of the request verbatim
+    if (memcmp(req, resp, 6) != 0) return BarrierDriverError::IO_ERROR;
+
     return BarrierDriverError::OK;
 }
 
@@ -271,32 +320,55 @@ BarrierControllerModbus::sendReadRegs(uint8_t slave, uint16_t start,
                                        uint16_t count,
                                        QVector<uint16_t>& out) {
     std::lock_guard<std::mutex> lock(bus_mutex_);
-    uint8_t frame[8];
-    frame[0] = slave;
-    frame[1] = MB_FC_READ_HOLDING;
-    frame[2] = start >> 8;
-    frame[3] = start & 0xFF;
-    frame[4] = count >> 8;
-    frame[5] = count & 0xFF;
-    uint16_t crc = crc16(frame, 6);
-    frame[6] = crc & 0xFF;
-    frame[7] = crc >> 8;
+
+    uint8_t req[8];
+    req[0] = slave;
+    req[1] = MB_FC_READ_HOLDING;
+    req[2] = static_cast<uint8_t>(start >> 8);
+    req[3] = static_cast<uint8_t>(start & 0xFF);
+    req[4] = static_cast<uint8_t>(count >> 8);
+    req[5] = static_cast<uint8_t>(count & 0xFF);
+    uint16_t crc = crc16(req, 6);
+    req[6] = static_cast<uint8_t>(crc & 0xFF);
+    req[7] = static_cast<uint8_t>(crc >> 8);
 
     serialFlush();
-    auto err = serialWrite(frame, 8);
+
+    rtsSet(fd_, true);
+    usleep(1000);
+    auto err = serialWrite(req, sizeof(req));
+    tcdrain(fd_);
+    rtsSet(fd_, false);
+    usleep(1000);
     if (err != BarrierDriverError::OK) return err;
 
-    uint8_t header[3]; size_t got = 0;
-    err = serialRead(header, 3, 500, got);
-    if (err != BarrierDriverError::OK || got != 3) return err;
-    uint8_t nbytes = header[2];
-    QVector<uint8_t> body(nbytes + 2);
-    err = serialRead(body.data(), nbytes + 2, 500, got);
+    // Response: addr(1) + FC(1) + byte_count(1) + data(2*count) + CRC(2)
+    const size_t resp_len = 5 + static_cast<size_t>(count) * 2;
+    QVector<uint8_t> resp(static_cast<int>(resp_len));
+    size_t got = 0;
+    err = serialRead(resp.data(), resp_len, 500, got);
     if (err != BarrierDriverError::OK) return err;
+    if (got < 5) return BarrierDriverError::TIMEOUT;
+
+    // CRC validation
+    uint16_t crc_recv = (static_cast<uint16_t>(resp[got - 1]) << 8) | resp[got - 2];
+    if (crc_recv != crc16(resp.data(), got - 2)) return BarrierDriverError::CRC_MISMATCH;
+
+    // Slave ID check
+    if (resp[0] != slave) return BarrierDriverError::SLAVE_NOT_FOUND;
+
+    // Modbus exception response (FC bit 7 set)
+    if (resp[1] & 0x80) return BarrierDriverError::DEVICE_FAULT;
+
+    // Byte-count field validation
+    uint8_t byte_count = resp[2];
+    if (byte_count != static_cast<uint8_t>(count * 2)) return BarrierDriverError::IO_ERROR;
+    if (got < 3u + byte_count + 2u) return BarrierDriverError::IO_ERROR;
 
     out.clear();
-    for (int i = 0; i < nbytes; i += 2)
-        out.append(((uint16_t)body[i] << 8) | body[i + 1]);
+    for (uint16_t i = 0; i < count; i++)
+        out.append((static_cast<uint16_t>(resp[3 + i * 2]) << 8) | resp[4 + i * 2]);
+
     return BarrierDriverError::OK;
 }
 
@@ -326,31 +398,43 @@ BarrierControllerModbus::setSlaveAddress(uint8_t current_addr, uint8_t new_addr)
 
     std::lock_guard<std::mutex> lock(bus_mutex_);
 
-    // FC06: slave, FC, reg_hi, reg_lo, val_hi, val_lo, crc_lo, crc_hi
-    uint8_t frame[8];
-    frame[0] = current_addr;
-    frame[1] = MB_FC_WRITE_REGISTER;
-    frame[2] = static_cast<uint8_t>(REG_SLAVE_ADDR >> 8);
-    frame[3] = static_cast<uint8_t>(REG_SLAVE_ADDR & 0xFF);
-    frame[4] = 0x00;
-    frame[5] = new_addr;
-    uint16_t crc = crc16(frame, 6);
-    frame[6] = static_cast<uint8_t>(crc & 0xFF);
-    frame[7] = static_cast<uint8_t>(crc >> 8);
+    // FC06 request goes out addressed to current_addr.
+    uint8_t req[8];
+    req[0] = current_addr;
+    req[1] = MB_FC_WRITE_REGISTER;
+    req[2] = static_cast<uint8_t>(REG_SLAVE_ADDR >> 8);
+    req[3] = static_cast<uint8_t>(REG_SLAVE_ADDR & 0xFF);
+    req[4] = 0x00;
+    req[5] = new_addr;
+    uint16_t crc = crc16(req, 6);
+    req[6] = static_cast<uint8_t>(crc & 0xFF);
+    req[7] = static_cast<uint8_t>(crc >> 8);
 
     serialFlush();
-    auto err = serialWrite(frame, 8);
+
+    rtsSet(fd_, true);
+    usleep(1000);
+    auto err = serialWrite(req, sizeof(req));
+    tcdrain(fd_);
+    rtsSet(fd_, false);
+    usleep(1000);
     if (err != BarrierDriverError::OK) return err;
 
-    // FC06 echoes the request verbatim on success. Give the device a little
-    // longer than usual since writing to the config register can trigger a
-    // NVRAM flush on some firmwares.
+    // This firmware applies the new address immediately and echoes FC06 with
+    // new_addr in byte[0] (not current_addr). Give extra time for NVRAM flush.
     uint8_t resp[8]; size_t got = 0;
-    err = serialRead(resp, 8, 800, got);
+    err = serialRead(resp, sizeof(resp), 800, got);
     if (err != BarrierDriverError::OK) return err;
-    if (got != 8) return BarrierDriverError::TIMEOUT;
+    if (got < sizeof(req)) return BarrierDriverError::TIMEOUT;
 
-    // Refresh our slave list so subsequent ops target the new address.
+    // CRC validation
+    uint16_t crc_recv = (static_cast<uint16_t>(resp[7]) << 8) | resp[6];
+    if (crc_recv != crc16(resp, 6)) return BarrierDriverError::CRC_MISMATCH;
+
+    // Device responds with the new address in byte[0]
+    if (resp[0] != new_addr) return BarrierDriverError::SLAVE_NOT_FOUND;
+    if (resp[1] & 0x80) return BarrierDriverError::DEVICE_FAULT;
+
     slaves_.removeAll(current_addr);
     if (!slaves_.contains(new_addr)) slaves_.append(new_addr);
     return BarrierDriverError::OK;

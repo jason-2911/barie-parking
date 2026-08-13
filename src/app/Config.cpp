@@ -11,6 +11,10 @@
 #include <QJsonArray>
 #include <QDebug>
 
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
+
 bool Config::load(const QString& path) {
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly)) {
@@ -115,22 +119,39 @@ bool Config::load(const QString& path) {
     if (ui.payment_success_countdown_seconds < 5)
         ui.payment_success_countdown_seconds = 5;
 
-    // vehicle sensor
-    auto vs = root["vehicle_sensor"].toObject();
-    vehicle_sensor.enabled        = vs["enabled"].toBool(true);
-    vehicle_sensor.chip_path      = vs["chip_path"].toString("/dev/gpiochip0");
-    vehicle_sensor.line_offset    = vs["line_offset"].toInt(17);
-    vehicle_sensor.active_low     = vs["active_low"].toBool(true);
-    vehicle_sensor.bias_pull_up   = vs["bias_pull_up"].toBool(true);
-    vehicle_sensor.debounce_us    = vs["debounce_us"].toInt(20000);
-    vehicle_sensor.clear_delay_ms = vs["clear_delay_ms"].toInt(1500);
+    // vehicle sensors
+    // Modern form is an array `vehicle_sensors[]`, one per lane, each tagged
+    // with the `barrier_id` (short suffix) it serves. The legacy singular
+    // `vehicle_sensor` object is still accepted and folded into a single
+    // entry with no barrier_id, which main.cpp later binds to the first
+    // barrier. main.cpp expands every barrier_id to "{device_id}_{suffix}".
+    auto parseSensor = [](const QJsonObject& vs) {
+        VehicleSensorConfig c;
+        c.barrier_id     = vs["barrier_id"].toString();
+        c.enabled        = vs["enabled"].toBool(true);
+        c.chip_path      = vs["chip_path"].toString("/dev/gpiochip0");
+        c.line_offset    = vs["line_offset"].toInt(17);
+        c.active_low     = vs["active_low"].toBool(true);
+        c.bias_pull_up   = vs["bias_pull_up"].toBool(true);
+        c.debounce_us    = vs["debounce_us"].toInt(20000);
+        c.clear_delay_ms = vs["clear_delay_ms"].toInt(1500);
+        return c;
+    };
+    vehicle_sensors.clear();
+    if (root["vehicle_sensors"].isArray()) {
+        for (const auto& v : root["vehicle_sensors"].toArray())
+            vehicle_sensors.append(parseSensor(v.toObject()));
+    } else if (root.contains("vehicle_sensor")) {
+        vehicle_sensors.append(parseSensor(root["vehicle_sensor"].toObject()));
+    }
 
     // barriers
     barriers.clear();
     for (const auto& bv : root["barriers"].toArray()) {
         auto bo = bv.toObject();
         BarrierConfig bc;
-        bc.id                = bo["id"].toString();
+        bc.short_id          = bo["id"].toString();
+        bc.id                = bc.short_id;   // expanded in main.cpp after device.id is known
         bc.direction         = directionFromStr(bo["direction"].toString());
         bc.modbus_addr       = bo["modbus_addr"].toInt(1);
         bc.description       = bo["description"].toString();
@@ -141,7 +162,8 @@ bool Config::load(const QString& path) {
 
     qInfo() << "Config loaded: device=" << device.id
             << "type=" << deviceTypeStr(device.type)
-            << "barriers=" << barriers.size();
+            << "barriers=" << barriers.size()
+            << "sensors=" << vehicle_sensors.size();
     return true;
 }
 
@@ -166,11 +188,12 @@ bool Config::save(const QString& path) const {
     dev["has_cash_reader"] = device.has_cash_reader;
     root["device"] = dev;
 
-    // Patch barriers
+    // Patch barriers — always write short_id (the raw suffix) so that after
+    // the next startup main.cpp can expand it again without double-prefixing.
     QJsonArray arr;
     for (const auto& b : barriers) {
         QJsonObject o;
-        o["id"]                 = b.id;
+        o["id"]                 = b.short_id.isEmpty() ? b.id : b.short_id;
         o["direction"]          = directionStr(b.direction);
         o["modbus_addr"]        = b.modbus_addr;
         o["description"]        = b.description;
@@ -191,10 +214,15 @@ bool Config::save(const QString& path) const {
     out.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
     out.close();
 
-    // Atomic replace
-    QFile::remove(path);
-    if (!QFile::rename(tmp, path)) {
-        qWarning() << "[Config] save: rename" << tmp << "→" << path << "failed";
+    // Atomic replace via POSIX rename(2) — overwrites the destination
+    // atomically on Linux. Do NOT use QFile::rename(): some Qt versions refuse
+    // to overwrite an existing file, breaking the round-trip save/load test
+    // and creating a brief window without a config file.
+    if (::rename(tmp.toLocal8Bit().constData(),
+                 path.toLocal8Bit().constData()) != 0) {
+        qWarning() << "[Config] save: rename" << tmp << "→" << path
+                   << "failed:" << strerror(errno);
+        QFile::remove(tmp);   // clean up orphaned tmp
         return false;
     }
     qInfo() << "[Config] saved" << path;

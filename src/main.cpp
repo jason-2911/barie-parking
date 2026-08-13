@@ -147,6 +147,17 @@ int main(int argc, char* argv[]) {
     for (auto& bc : cfg.barriers)
         bc.id = cfg.device.id + "_" + bc.id;
 
+    // Bind and expand vehicle-sensor barrier ids the same way. A sensor with
+    // no explicit barrier_id (legacy singular `vehicle_sensor`) binds to the
+    // first barrier so single-lane deployments keep working unchanged.
+    for (auto& vs : cfg.vehicle_sensors) {
+        QString suffix = vs.barrier_id;
+        if (suffix.isEmpty() && !cfg.barriers.isEmpty())
+            suffix = cfg.barriers.front().short_id;
+        vs.barrier_id = suffix.isEmpty() ? QString()
+                                         : cfg.device.id + "_" + suffix;
+    }
+
     // Start application
     Application parking_app(cfg, config_path);
     parking_app.start();

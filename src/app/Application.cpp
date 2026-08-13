@@ -3,7 +3,6 @@
  */
 
 #include "app/Application.h"
-#include "app/LocalBridge.h"
 #include "app/MessageFilter.h"
 #include "app/NetworkInit.h"
 #include "mqtt/MqttClient.h"
@@ -39,17 +38,6 @@ Application::Application(Config& cfg,
     } else {
         qInfo() << "[App] entry_only profile — skipping NV9 + MainWindow";
     }
-
-    // Local IPC bridge to wifi-provisioning. Always on — provisioning
-    // remains reachable even if the cloud MQTT is down.
-    LocalBridge::BridgeConfig lbcfg;
-    local_bridge_ = new LocalBridge(lbcfg, &cfg_, config_path_, this);
-    connect(local_bridge_, &LocalBridge::configUpdated, this, [this]() {
-        qInfo() << "[App] config updated from provisioning — "
-                   "relevant changes apply on next restart";
-        // Outright live-reloading device_type would require tearing down
-        // half the stack; safer to ask systemd to bounce the service.
-    });
 
     // MQTT → App
     connect(mqtt_, &MqttClient::connected,       this, &Application::onMqttConnected);
@@ -101,12 +89,13 @@ Application::Application(Config& cfg,
 }
 
 Application::~Application() {
-    if (local_bridge_) local_bridge_->stop();
-    mqtt_->disconnectGraceful();
-    barrier_->closeAll();
-    if (sensor_) sensor_->shutdown();
+    // Explicit teardown in dependency order before Qt parent-child cleanup runs.
+    // Stop hardware threads first so no callbacks fire into half-destroyed state.
     if (nv9_)    nv9_->stop();
-    delete window_;
+    if (sensor_) sensor_->shutdown();
+    barrier_->closeAll();
+    mqtt_->disconnectGraceful();
+    delete window_;   // window_ has no QObject parent — must be explicit
 }
 
 void Application::start() {
@@ -152,13 +141,12 @@ void Application::proceedStartup() {
                       || display_monitor_->statusFilePath().isEmpty();
 
     sensor_->init();
-    barrier_->init();
-
-    // Hand the barrier driver to the provisioning bridge now that it's open.
-    if (local_bridge_) {
-        local_bridge_->setBarrierDriver(barrier_->driver());
-        local_bridge_->start();
+    if (!barrier_->init()) {
+        qCritical() << "[App] Barrier driver init failed — barriers uncontrolled";
+        if (window_) window_->setStatusMessage("LỖI: Không mở được cổng Modbus — liên hệ kỹ thuật");
+        // Continue startup: MQTT + UI remain useful for monitoring / manual override
     }
+    barrier_->closeAll();   // ensure all barriers are physically lowered on startup
 
     if (nv9_ && cfg_.device.has_cash_reader)
         nv9_->start();
@@ -174,7 +162,7 @@ void Application::onMqttConnected() {
         window_->setMqttStatus(true);
         window_->setStatusMessage("Kết nối server: OK");
     }
-    audio_->play("open_entry"); // startup chime
+    audio_->play("system_ready");
 }
 
 void Application::onMqttDisconnected() {

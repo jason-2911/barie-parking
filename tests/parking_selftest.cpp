@@ -10,10 +10,8 @@
  *   3.  Message-dispatch filter for entry_only / exit_only / full —
  *       this is the core safety property "foreign messages must not
  *       crash or change state".
- *   4.  LocalBridge ↔ fake wifi-provisioning round trip: scan → setaddr
- *       → update_config → get_config, for each device_type.
- *   5.  Config.save() round-trip: values written by update_config must
- *       re-load identically.
+ *   4.  OpenCommand reason vs barrier direction guard.
+ *   5.  Config save/load round-trip (barrier short_id preservation).
  *
  * Exit code 0 on full pass, 1 on any failure.
  */
@@ -24,14 +22,12 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTemporaryDir>
+#include <QFile>
 #include <cstdio>
 
 #include "app/Config.h"
-#include "app/LocalBridge.h"
 #include "app/MessageFilter.h"
 #include "types/MessageTypes.h"
-
-#include "MockBarrierController.h"
 
 // Reach into the driver's bit layout and CRC helper for direct unit tests.
 #include "hardware/drivers/BarrierControllerModbus.h"
@@ -74,18 +70,6 @@ uint16_t crc16_modbus(const uint8_t* data, size_t len) {
         }
     }
     return crc;
-}
-
-QByteArray buildEnvelope(const char* action, const QJsonObject& params) {
-    QJsonObject env;
-    env["req_id"] = "self-test";
-    env["action"] = action;
-    env["params"] = params;
-    return QJsonDocument(env).toJson(QJsonDocument::Compact);
-}
-
-QJsonObject parseAck(const QByteArray& ack) {
-    return QJsonDocument::fromJson(ack).object();
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
@@ -173,215 +157,8 @@ void testMessageFilter() {
     CHECK(!shouldDispatch(DeviceType::Unknown, InboundMsgType::VehicleInfo));
 }
 
-struct BridgeFixture {
-    Config              cfg;
-    QString             config_path;
-    MockBarrierController driver;
-    LocalBridge*        bridge = nullptr;
-
-    explicit BridgeFixture(const QString& tmpdir) {
-        config_path = tmpdir + "/config.json";
-        // Seed a minimal on-disk config so Config::save() has something to
-        // patch (it re-reads the file to preserve unrelated sections).
-        QJsonObject seed;
-        QJsonObject dev;
-        dev["id"]      = "selftest_dev";
-        dev["auto_id"] = false;
-        dev["type"]    = "exit_only";
-        seed["device"] = dev;
-        seed["barriers"] = QJsonArray{};
-        QFile f(config_path);
-        f.open(QIODevice::WriteOnly);
-        f.write(QJsonDocument(seed).toJson());
-        f.close();
-
-        cfg.load(config_path);
-        (void)driver.open();
-    }
-    ~BridgeFixture() { delete bridge; }
-
-    void make(LocalBridge::BridgeConfig bcfg = {}) {
-        bridge = new LocalBridge(bcfg, &cfg, config_path);
-        bridge->setBarrierDriver(&driver);
-        // NB: intentionally do NOT call bridge->start() — self-test invokes
-        // processEnvelope() directly so no broker is required.
-    }
-};
-
-void testBridgeActionsForMode(DeviceType mode, const char* mode_name) {
-    section(QByteArray("LocalBridge actions — mode=") + mode_name);
-
-    QTemporaryDir tmp;
-    BridgeFixture fx(tmp.path());
-    fx.make();
-
-    // Step 1: provisioning UI clicks "Scan" while two barriers are wired.
-    fx.driver.setScanResult({1, 2});
-    auto ack1 = parseAck(fx.bridge->processEnvelope(
-        buildEnvelope("scan_barriers", {})));
-    CHECK(ack1["ok"].toBool());
-    CHECK(ack1["barriers"].toArray().size() == 2);
-    CHECK(fx.driver.scanCalls() == 1);
-
-    // Step 2: rewrite barrier #1 to address 3 (simulates user pressing "Set").
-    QJsonObject p2;
-    p2["current_addr"] = 1;
-    p2["new_addr"]     = 3;
-    auto ack2 = parseAck(fx.bridge->processEnvelope(
-        buildEnvelope("set_barrier_addr", p2)));
-    CHECK(ack2["ok"].toBool());
-    CHECK(ack2["new_addr"].toInt() == 3);
-    CHECK(fx.driver.setAddrCalls().size() == 1);
-    CHECK(fx.driver.setAddrCalls().first().first == 1);
-    CHECK(fx.driver.setAddrCalls().first().second == 3);
-
-    // Step 3: bad address is refused.
-    QJsonObject p_bad;
-    p_bad["current_addr"] = 3;
-    p_bad["new_addr"]     = 999;
-    auto ack_bad = parseAck(fx.bridge->processEnvelope(
-        buildEnvelope("set_barrier_addr", p_bad)));
-    CHECK(!ack_bad["ok"].toBool());
-    CHECK(ack_bad["error"].toString() == "bad_address");
-
-    // Step 4: save config — this is where "wifi-provisioning hits Save".
-    QJsonObject save_params;
-    save_params["device_type"] = (mode == DeviceType::EntryOnly) ? "entry_only"
-                                : (mode == DeviceType::Full)    ? "full"
-                                                                : "exit_only";
-    QJsonArray bars;
-    {
-        QJsonObject b; b["addr"] = 3; b["role"] = "entry"; bars.append(b);
-    }
-    if (mode == DeviceType::Full) {
-        QJsonObject b; b["addr"] = 2; b["role"] = "exit"; bars.append(b);
-    }
-    save_params["barriers"] = bars;
-
-    auto ack_save = parseAck(fx.bridge->processEnvelope(
-        buildEnvelope("update_config", save_params)));
-    CHECK(ack_save["ok"].toBool());
-
-    // Config reflects the mode we just pushed.
-    CHECK(fx.cfg.device.type == mode);
-    CHECK(fx.cfg.barriers.size() == bars.size());
-    CHECK(fx.cfg.barriers[0].modbus_addr == 3);
-
-    // EntryOnly must disable the cash reader — the device doesn't have one.
-    CHECK(fx.cfg.device.has_cash_reader == (mode != DeviceType::EntryOnly));
-
-    // Step 5: config persisted — re-load from disk and compare.
-    Config reloaded;
-    CHECK(reloaded.load(fx.config_path));
-    CHECK(reloaded.device.type == mode);
-    CHECK(reloaded.barriers.size() == fx.cfg.barriers.size());
-
-    // Step 6: after save, a fresh get_config should echo the same thing
-    // (exactly what the provisioning page's loadConfig() call receives).
-    auto ack_get = parseAck(fx.bridge->processEnvelope(
-        buildEnvelope("get_config", {})));
-    CHECK(ack_get["ok"].toBool());
-    CHECK(ack_get["device_type"].toString() ==
-          save_params["device_type"].toString());
-    CHECK(ack_get["barriers"].toArray().size() == bars.size());
-}
-
-void testBridgeRejectsBadProfiles() {
-    section("LocalBridge — refuses inconsistent profile/barrier combos");
-
-    QTemporaryDir tmp;
-    BridgeFixture fx(tmp.path());
-    fx.make();
-
-    // full mode with only 1 barrier: must reject.
-    QJsonObject p;
-    p["device_type"] = "full";
-    QJsonArray bars;
-    { QJsonObject b; b["addr"] = 1; b["role"] = "entry"; bars.append(b); }
-    p["barriers"] = bars;
-
-    auto ack = parseAck(fx.bridge->processEnvelope(
-        buildEnvelope("update_config", p)));
-    CHECK(!ack["ok"].toBool());
-    CHECK(ack["error"].toString() == "full_needs_2_barriers");
-
-    // exit_only with no barriers: reject.
-    QJsonObject p2;
-    p2["device_type"] = "exit_only";
-    p2["barriers"]    = QJsonArray{};
-    auto ack2 = parseAck(fx.bridge->processEnvelope(
-        buildEnvelope("update_config", p2)));
-    CHECK(!ack2["ok"].toBool());
-    CHECK(ack2["error"].toString() == "exit_needs_1_barrier");
-
-    // Garbage action name: handled, not crashed.
-    auto ack3 = parseAck(fx.bridge->processEnvelope(
-        buildEnvelope("delete_everything", {})));
-    CHECK(!ack3["ok"].toBool());
-    CHECK(ack3["error"].toString() == "unknown_action");
-}
-
-void testFullWifiProvisioningFlow() {
-    section("End-to-end: wifi-provisioning → parking-client");
-
-    QTemporaryDir tmp;
-    BridgeFixture fx(tmp.path());
-    fx.make();
-
-    // Simulates the exact sequence a real captive-portal session produces:
-    //   1) user plugs in one barrier (factory default addr=1)
-    //   2) hits Scan                 → GET  /api/barriers/scan
-    //   3) hits "Set addr 1 → 2"     → POST /api/barriers/setaddr
-    //   4) plugs in the second barrier (still factory default addr=1)
-    //   5) hits Scan again           → addresses {1, 2}
-    //   6) picks Full + roles + Save → POST /api/config
-
-    fx.driver.setScanResult({1});
-    auto s1 = parseAck(fx.bridge->processEnvelope(
-        buildEnvelope("scan_barriers", {})));
-    CHECK(s1["ok"].toBool());
-    CHECK(s1["barriers"].toArray().size() == 1);
-
-    QJsonObject setp;
-    setp["current_addr"] = 1;
-    setp["new_addr"]     = 2;
-    auto s2 = parseAck(fx.bridge->processEnvelope(
-        buildEnvelope("set_barrier_addr", setp)));
-    CHECK(s2["ok"].toBool());
-
-    fx.driver.setScanResult({1, 2});
-    auto s3 = parseAck(fx.bridge->processEnvelope(
-        buildEnvelope("scan_barriers", {})));
-    CHECK(s3["ok"].toBool());
-    CHECK(s3["barriers"].toArray().size() == 2);
-
-    QJsonObject save;
-    save["device_type"] = "full";
-    QJsonArray bars;
-    { QJsonObject b; b["addr"] = 2; b["role"] = "entry"; bars.append(b); }
-    { QJsonObject b; b["addr"] = 1; b["role"] = "exit";  bars.append(b); }
-    save["barriers"] = bars;
-
-    auto s4 = parseAck(fx.bridge->processEnvelope(
-        buildEnvelope("update_config", save)));
-    CHECK(s4["ok"].toBool());
-
-    // The config on disk should now be ready for the next parking-client
-    // restart in full mode.
-    Config reloaded;
-    CHECK(reloaded.load(fx.config_path));
-    CHECK(reloaded.device.type == DeviceType::Full);
-    CHECK(reloaded.barriers.size() == 2);
-    CHECK(reloaded.barriers[0].direction == BarrierDirection::Entry);
-    CHECK(reloaded.barriers[1].direction == BarrierDirection::Exit);
-}
-
 void testOpenReasonDirectionGuard() {
     section("OpenCommand — reason vs barrier direction");
-
-    // The Application layer rejects open_cmd when the reason's implied
-    // direction conflicts with the targeted barrier's direction. This
-    // exercises the pure helper that drives that decision.
 
     // Exit-side reasons.
     CHECK(openReasonImpliesDirection(OpenReason::PaymentConfirmed) == BarrierDirection::Exit);
@@ -398,23 +175,20 @@ void testOpenReasonDirectionGuard() {
     // Unknown reason — handled as "refuse outright" by Application.
     CHECK(openReasonImpliesDirection(OpenReason::Unknown)          == BarrierDirection::Unknown);
 
-    // Simulate the Application::handleOpenCommand decision for a few combos.
     auto allowed = [](OpenReason r, BarrierDirection bdir) {
-        if (r == OpenReason::Unknown) return false;       // hard refuse
+        if (r == OpenReason::Unknown) return false;
         auto implied = openReasonImpliesDirection(r);
         return implied == BarrierDirection::Unknown || implied == bdir;
     };
 
-    // Exit barrier accepts payment / monthly / free / manual / unknown(reject).
     CHECK( allowed(OpenReason::PaymentConfirmed, BarrierDirection::Exit));
     CHECK( allowed(OpenReason::MonthlyTicket,    BarrierDirection::Exit));
     CHECK( allowed(OpenReason::FreeExit,         BarrierDirection::Exit));
     CHECK( allowed(OpenReason::ManualOverride,   BarrierDirection::Exit));
-    CHECK(!allowed(OpenReason::VehicleEntry,     BarrierDirection::Exit));   // ← this is the bug fix
+    CHECK(!allowed(OpenReason::VehicleEntry,     BarrierDirection::Exit));
     CHECK(!allowed(OpenReason::EntryAuthorized,  BarrierDirection::Exit));
     CHECK(!allowed(OpenReason::Unknown,          BarrierDirection::Exit));
 
-    // Entry barrier mirrors: refuses anything exit-flavoured.
     CHECK( allowed(OpenReason::VehicleEntry,     BarrierDirection::Entry));
     CHECK( allowed(OpenReason::EntryAuthorized,  BarrierDirection::Entry));
     CHECK( allowed(OpenReason::ManualOverride,   BarrierDirection::Entry));
@@ -427,7 +201,6 @@ void testOpenReasonDirectionGuard() {
 void testForeignMessagesDoNotCrash() {
     section("Safety — foreign messages per mode never dispatch");
 
-    // Sanity: every mode × message combination returns a bool — no UB.
     const InboundMsgType types[] = {
         InboundMsgType::VehicleInfo, InboundMsgType::OpenCommand,
         InboundMsgType::QrPaymentConfirmed, InboundMsgType::PaymentSuccess,
@@ -449,6 +222,49 @@ void testForeignMessagesDoNotCrash() {
     CHECK(dropped    == ((6 - 2) + 0 + 0 + 6));
 }
 
+void testConfigSaveRoundTrip() {
+    section("Config save/load — barrier short_id preserved");
+
+    QTemporaryDir tmp;
+    const QString path = tmp.path() + "/config.json";
+
+    // Write minimal seed config with short IDs (as they appear in config.json).
+    QJsonObject seed;
+    QJsonObject dev;
+    dev["id"]      = "selftest_dev";
+    dev["auto_id"] = false;
+    dev["type"]    = "exit_only";
+    seed["device"] = dev;
+    QJsonArray bars;
+    { QJsonObject b; b["id"] = "01"; b["modbus_addr"] = 1;
+      b["direction"] = "exit"; bars.append(b); }
+    seed["barriers"] = bars;
+    QFile f(path);
+    f.open(QIODevice::WriteOnly);
+    f.write(QJsonDocument(seed).toJson());
+    f.close();
+
+    Config cfg;
+    CHECK(cfg.load(path));
+    CHECK(cfg.barriers.size() == 1);
+    CHECK(cfg.barriers[0].short_id == "01");
+    CHECK(cfg.barriers[0].id       == "01");   // id == short_id before expansion
+
+    // Simulate main.cpp ID expansion.
+    cfg.barriers[0].id = cfg.device.id + "_" + cfg.barriers[0].id;
+    CHECK(cfg.barriers[0].id       == "selftest_dev_01");
+    CHECK(cfg.barriers[0].short_id == "01");   // short_id unchanged
+
+    // Save and reload — must NOT double-prefix.
+    CHECK(cfg.save(path));
+
+    Config reloaded;
+    CHECK(reloaded.load(path));
+    CHECK(reloaded.barriers.size() == 1);
+    CHECK(reloaded.barriers[0].short_id == "01");
+    CHECK(reloaded.barriers[0].id       == "01");   // raw short id on disk
+}
+
 } // anonymous namespace
 
 int main(int argc, char* argv[]) {
@@ -462,11 +278,7 @@ int main(int argc, char* argv[]) {
     testMessageFilter();
     testOpenReasonDirectionGuard();
     testForeignMessagesDoNotCrash();
-    testBridgeActionsForMode(DeviceType::EntryOnly, "entry_only");
-    testBridgeActionsForMode(DeviceType::ExitOnly,  "exit_only");
-    testBridgeActionsForMode(DeviceType::Full,       "full");
-    testBridgeRejectsBadProfiles();
-    testFullWifiProvisioningFlow();
+    testConfigSaveRoundTrip();
 
     printf("\n========================\n");
     printf("PASS: %d   FAIL: %d\n", g_passed, g_failed);

@@ -71,6 +71,8 @@ private:
     int     remaining_secs_   = 0;
     int     timeout_extra_    = 0;
     QrState state_            = QrState::Normal;
+    int     msg_font_px_      = 26;
+    int     timer_font_px_    = 42;
 
     VehicleInfo current_vi_;
 };

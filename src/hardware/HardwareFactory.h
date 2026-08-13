@@ -25,8 +25,10 @@ public:
     static std::unique_ptr<INV9Validator>
     createValidator(const Config& cfg);
 
-    // Builds the vehicle presence sensor (E3F-DS10C4 today).
-    // On macOS the underlying driver is auto-stubbed by __APPLE__.
+    // Builds one vehicle presence sensor (E3F-DS10C4 today) from a single
+    // lane's config. Called once per entry in cfg.vehicle_sensors so each
+    // barrier/lane gets its own GPIO line. On macOS the underlying driver is
+    // auto-stubbed by __APPLE__.
     static std::unique_ptr<IVehicleSensor>
-    createVehicleSensor(const Config& cfg);
+    createVehicleSensor(const VehicleSensorConfig& vs);
 };

@@ -23,12 +23,16 @@ HardwareFactory::createValidator(const Config& cfg) {
 }
 
 std::unique_ptr<IVehicleSensor>
-HardwareFactory::createVehicleSensor(const Config& cfg) {
+HardwareFactory::createVehicleSensor(const VehicleSensorConfig& vs) {
     VehicleSensorGpiod::Options opts;
-    opts.chip_path    = cfg.vehicle_sensor.chip_path.toStdString();
-    opts.line_offset  = static_cast<uint32_t>(cfg.vehicle_sensor.line_offset);
-    opts.active_low   = cfg.vehicle_sensor.active_low;
-    opts.bias_pull_up = cfg.vehicle_sensor.bias_pull_up;
-    opts.debounce_us  = static_cast<uint32_t>(cfg.vehicle_sensor.debounce_us);
+    opts.chip_path    = vs.chip_path.toStdString();
+    opts.line_offset  = static_cast<uint32_t>(vs.line_offset);
+    opts.active_low   = vs.active_low;
+    opts.bias_pull_up = vs.bias_pull_up;
+    opts.debounce_us  = static_cast<uint32_t>(vs.debounce_us);
+    // Tag the consumer so `gpioinfo` shows which lane owns each line when a
+    // device drives two sensors on the same chip.
+    if (!vs.barrier_id.isEmpty())
+        opts.consumer_label = "parking-vehicle-sensor-" + vs.barrier_id.toStdString();
     return std::make_unique<VehicleSensorGpiod>(std::move(opts));
 }

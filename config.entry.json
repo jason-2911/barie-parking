@@ -1,0 +1,56 @@
+{
+  "device": {
+    "id": "opi4_a1b2c3d4",
+    "id_prefix": "pk_",
+    "auto_id": true,
+    "description": "Tầng B1 - Làn vào",
+    "type": "entry_only",
+    "has_cash_reader": false,
+    "has_display": false,
+    "has_audio": true
+  },
+  "vehicle_sensor": {
+    "enabled": true,
+    "chip_path": "/dev/gpiochip0",
+    "line_offset": 17,
+    "active_low": true,
+    "bias_pull_up": true,
+    "debounce_us": 20000,
+    "clear_delay_ms": 1500
+  },
+  "mqtt": {
+    "host": "localhost",
+    "port": 1883,
+    "username": "parking",
+    "password": "parking123",
+    "keepalive_seconds": 10
+  },
+  "barriers": [
+    {
+      "id": "01",
+      "direction": "entry",
+      "modbus_addr": 1,
+      "description": "Cần B1 - Vào",
+      "auto_close_seconds": 8
+    }
+  ],
+  "serial": {
+    "barrier_port": "/dev/ttyUSB0",
+    "barrier_baud": 19200
+  },
+  "audio": {
+    "sound_dir": "resources/sounds",
+    "volume": 90,
+    "sounds": {
+      "system_ready": "system_ready.wav",
+      "open_entry":   "open_entry.wav",
+      "error":        "error.wav"
+    }
+  },
+  "logging": {
+    "path": "/var/log/parking/parking-entry.log",
+    "max_size_mb": 10,
+    "max_archives": 5,
+    "also_stderr": true
+  }
+}

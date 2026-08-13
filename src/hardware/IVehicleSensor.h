@@ -53,4 +53,10 @@ public:
     // boundary to hop back to the GUI thread.
     using StateCallback = std::function<void(bool present)>;
     virtual void setStateCallback(StateCallback cb) = 0;
+
+    // Perform a synchronous hardware read and update the cached present state.
+    // Call from the GUI thread after a startup delay to catch vehicles that
+    // were already blocking the sensor before the gate opened (no edge fires
+    // in that case). Default: no-op for drivers that don't support live reads.
+    virtual void pollLive() {}
 };

@@ -1,20 +1,19 @@
 #pragma once
 #include <QObject>
+#include <QProcess>
+#include <QQueue>
+#include <QTimer>
 #include "app/Config.h"
 #include "types/MessageTypes.h"
 
-// Plays short WAV cues by spawning detached `aplay` processes. The subprocess
-// model lets us route concurrent sounds to different ALSA virtual devices
-// (parking_left / parking_right) without QMediaPlayer holding hw:0,0
-// exclusive — required for the "one stereo jack, two speakers" setup.
+// Plays WAV cues via `aplay` in a serial queue — each sound starts only after
+// the previous one finishes. Routing to ALSA virtual devices (parking_left /
+// parking_right / default) keeps hw:0,0 shared via dmix.
 class AudioPlayer : public QObject {
     Q_OBJECT
 public:
     explicit AudioPlayer(const Config& cfg, QObject* parent = nullptr);
 
-    // Play `sound_key` (looked up via cfg.audio.sounds) on the requested
-    // channel. Default = system default ALSA device; Left/Right = the
-    // configured parking_left / parking_right virtual devices.
     void play(const QString& sound_key,
               AudioChannel channel = AudioChannel::Default);
 
@@ -22,5 +21,18 @@ public:
     void setVolume(int vol_percent);
 
 private:
-    const Config& cfg_;
+    static constexpr int kPlayTimeoutMs = 10000;   // kill aplay if it hangs > 10 s
+
+    struct SoundRequest {
+        QString path;
+        QString device;
+    };
+
+    void startNext();
+    void killCurrent();
+
+    const Config&        cfg_;
+    QProcess*            current_       = nullptr;
+    QTimer*              play_timeout_  = nullptr;
+    QQueue<SoundRequest> queue_;
 };

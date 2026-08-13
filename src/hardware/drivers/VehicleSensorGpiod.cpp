@@ -72,6 +72,7 @@ bool VehicleSensorGpiod::isOpen() const {
 }
 
 void VehicleSensorGpiod::runLoop() { /* never invoked on macOS */ }
+void VehicleSensorGpiod::pollLive() { /* no hardware on macOS */ }
 
 #else  // ── Linux (libgpiod v1) ────────────────────────────────────────────
 
@@ -136,9 +137,21 @@ VehicleSensorError VehicleSensorGpiod::open()
         return VehicleSensorError::IoError;
     }
 
-    // Seed initial presence state before the first edge arrives.
+    // Do NOT seed present_ from the startup GPIO read. When the barrier arm is
+    // in the DOWN position it physically blocks the sensor beam — the NPN
+    // output pulls LOW, active_low logic inverts it to logical-HIGH, and
+    // gpiod_line_get_value() returns 1 ("present") even with no vehicle. This
+    // causes every barrier open to immediately skip to Passing state.
+    // Start as NOT present; BarrierManager calls pollLive() after 2 s
+    // (once the arm has cleared) to pick up any vehicle that was already
+    // blocking the beam before the gate opened.
     const int init_val = gpiod_line_get_value(line_);
-    present_.store(init_val > 0, std::memory_order_release);
+    if (init_val > 0) {
+        qWarning() << "[VehicleSensor] startup read shows PRESENT — ignoring"
+                      " (barrier arm may be blocking beam). pollLive() will"
+                      " re-read once the arm has cleared.";
+    }
+    present_.store(false, std::memory_order_release);
 
     if (pipe2(wake_fd_, O_NONBLOCK | O_CLOEXEC) != 0) {
         qCritical() << "[VehicleSensor] pipe2 failed:" << strerror(errno);
@@ -187,6 +200,28 @@ void VehicleSensorGpiod::close()
 bool VehicleSensorGpiod::isOpen() const
 {
     return running_.load(std::memory_order_acquire);
+}
+
+void VehicleSensorGpiod::pollLive()
+{
+    // Called from the GUI thread after a startup delay to catch a vehicle
+    // that was already blocking the beam when the gate opened (no edge event
+    // fires in that case). Safe to call from main thread: GPIOHANDLE ioctl is
+    // independent from the event fd used by the worker thread.
+    if (!running_.load(std::memory_order_acquire) || !line_) return;
+    const int val = gpiod_line_get_value(line_);
+    if (val < 0) {
+        qWarning() << "[VehicleSensor] pollLive: gpiod_line_get_value failed:"
+                   << strerror(errno);
+        return;
+    }
+    const bool present = (val > 0);
+    const bool prev    = present_.exchange(present, std::memory_order_acq_rel);
+    if (prev != present) {
+        qInfo() << "[VehicleSensor] pollLive: state changed to"
+                << (present ? "PRESENT" : "CLEAR");
+        deliver(present);
+    }
 }
 
 void VehicleSensorGpiod::runLoop()

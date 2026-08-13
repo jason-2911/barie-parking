@@ -21,7 +21,6 @@ class NV9Manager;
 class AudioPlayer;
 class MainWindow;
 class DisplayMonitor;
-class LocalBridge;
 
 class Application : public QObject {
     Q_OBJECT
@@ -76,9 +75,6 @@ private:
     // Called after the network/geolocation probe completes (or times out).
     void proceedStartup();
 
-    // cfg_ is mutable because LocalBridge may rewrite device_type / barriers
-    // at runtime (provisioning UI → update_config). All other consumers still
-    // treat it read-only.
     Config&                cfg_;
     QString                config_path_;
 
@@ -94,7 +90,6 @@ private:
     MainWindow*            window_   = nullptr;
     CommandQueue*          cmd_queue_= nullptr;
     DisplayMonitor*        display_monitor_ = nullptr;
-    LocalBridge*           local_bridge_    = nullptr;
 
     bool                   display_available_ = true;
 

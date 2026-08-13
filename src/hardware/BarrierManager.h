@@ -47,7 +47,9 @@ public:
                              QObject* parent = nullptr);
     ~BarrierManager() override;
 
-    void init();
+    // Returns true if the driver opened and at least one slave registered.
+    // Application must check this and refuse to operate barriers if false.
+    [[nodiscard]] bool init();
     void closeAll();
 
     // High-level requests — go through the state machine.
@@ -74,8 +76,10 @@ signals:
 
 private slots:
     void pollStatus();
-    void onVehiclePresent();
-    void onVehicleCleared();
+    // barrier_id identifies the lane whose sensor fired. Empty / unknown id
+    // falls back to the single-lane heuristic (activeBarrierForSensor()).
+    void onVehiclePresent(const QString& barrier_id);
+    void onVehicleCleared(const QString& barrier_id);
 
 private:
     enum class State {
@@ -106,8 +110,16 @@ private:
     void rawRaise(const QString& barrier_id);
     void rawLower(const QString& barrier_id);
 
-    // Which barrier is currently interacting with the (single-lane) sensor?
+    // Fallback for events that arrive without a lane id (legacy single-lane).
     QString activeBarrierForSensor() const;
+
+    // Resolve which barrier a sensor event refers to: prefer the explicit
+    // lane id, fall back to the single-lane heuristic when it is empty/unknown.
+    QString resolveSensorBarrier(const QString& barrier_id) const;
+
+    // Per-lane clear delay (ms) before lowering. Falls back to 1500 ms when
+    // no sensor is bound to the barrier.
+    int clearDelayForBarrier(const QString& barrier_id) const;
 
     uint8_t modbusAddrFor(const QString& barrier_id) const;
     QString barrierIdFor(uint8_t modbus_addr) const;

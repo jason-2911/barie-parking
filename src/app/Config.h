@@ -11,7 +11,8 @@
 #include "types/MessageTypes.h"
 
 struct BarrierConfig {
-    QString          id;
+    QString          id;           // full runtime id: "{device_id}_{short_id}"
+    QString          short_id;     // raw id from config.json — used when saving
     BarrierDirection direction = BarrierDirection::Exit;
     int              modbus_addr = 1;
     QString          description;
@@ -23,6 +24,12 @@ struct BarrierConfig {
 };
 
 struct VehicleSensorConfig {
+    // Which barrier (lane) this sensor serves. Stored as the short suffix
+    // in config.json (e.g. "01"); expanded to the full "{device_id}_{suffix}"
+    // at startup so it matches BarrierConfig::id. Empty in config means
+    // "shared single-lane sensor" → bound to the first barrier at startup
+    // (backward-compat with the legacy singular `vehicle_sensor` block).
+    QString barrier_id;
     bool    enabled        = true;
     QString chip_path      = "/dev/gpiochip0";
     int     line_offset    = 17;     // BCM pin number
@@ -124,8 +131,12 @@ struct Config {
         bool allow_short_payment_timeout = false;
     } self_test;
 
-    VehicleSensorConfig    vehicle_sensor;
-    QVector<BarrierConfig> barriers;
+    // One sensor per lane/barrier. A device in `full` mode declares two
+    // (one bound to the entry barrier, one to the exit barrier). Single-lane
+    // devices declare one — or use the legacy singular `vehicle_sensor` block,
+    // which the loader folds into a single entry here.
+    QVector<VehicleSensorConfig> vehicle_sensors;
+    QVector<BarrierConfig>       barriers;
 
     // Load from JSON file, returns false on error
     bool load(const QString& path);
@@ -139,6 +150,14 @@ struct Config {
     const BarrierConfig* findBarrier(const QString& id) const {
         for (const auto& b : barriers)
             if (b.id == id) return &b;
+        return nullptr;
+    }
+
+    // Lookup the vehicle sensor bound to a given barrier id. Returns nullptr
+    // if no sensor is configured for that lane.
+    const VehicleSensorConfig* sensorForBarrier(const QString& barrier_id) const {
+        for (const auto& s : vehicle_sensors)
+            if (s.barrier_id == barrier_id) return &s;
         return nullptr;
     }
 };

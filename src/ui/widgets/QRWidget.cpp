@@ -36,18 +36,39 @@ QRWidget::~QRWidget() {
 }
 
 static bool looksLikeHttpUrl(const QString& s) {
-    return s.startsWith("http://", Qt::CaseInsensitive)
+    return s.startsWith("http://",  Qt::CaseInsensitive)
         || s.startsWith("https://", Qt::CaseInsensitive);
+}
+
+static bool looksLikeDataUri(const QString& s) {
+    return s.startsWith("data:image/", Qt::CaseInsensitive);
+}
+
+// Decode a data URI ("data:image/png;base64,<b64>") into a QImage.
+static QImage decodeDataUri(const QString& s) {
+    // Find the comma that separates the header from the base64 body.
+    const int comma = s.indexOf(',');
+    if (comma < 0) return {};
+    const QByteArray raw = QByteArray::fromBase64(
+        s.mid(comma + 1).toLatin1(),
+        QByteArray::IgnoreBase64DecodingErrors);
+    QImage img;
+    img.loadFromData(raw);
+    return img;
 }
 
 void QRWidget::setUrl(const QString& url) {
     url_      = url;
     has_qr_   = !url.isEmpty();
-    is_image_ = has_qr_ && looksLikeHttpUrl(url);
+    is_image_ = has_qr_ && (looksLikeHttpUrl(url) || looksLikeDataUri(url));
     image_    = QImage();
 
-    if (is_image_) {
-        fetchImage(url);
+    if (has_qr_) {
+        if (looksLikeDataUri(url)) {
+            image_ = decodeDataUri(url);   // synchronous — no network needed
+        } else if (looksLikeHttpUrl(url)) {
+            fetchImage(url);
+        }
     }
     update();
 }

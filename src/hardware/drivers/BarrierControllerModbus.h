@@ -34,10 +34,10 @@
 #define REG_PORT_INPUT           0xD016    // 监控参数16 端口输入状态 (V3.00+)
 
 // Configuration registers (FC06). Vendor mnemonics in the "H00-XX" menu:
-//   H00-31 → slave address (0x0031)
-//   H00-32 → baud rate     (0x0032) — not written from firmware, read-only ref
-#define REG_SLAVE_ADDR           0x0031
-#define REG_BAUD_RATE            0x0032
+//   H00-31 → slave address  actual Modbus register 0x0010 (confirmed on hardware)
+//   H00-32 → baud rate      actual Modbus register 0x0020 (read-only ref, not written)
+#define REG_SLAVE_ADDR           0x0010
+#define REG_BAUD_RATE            0x0020
 
 // ─── D014H run status bits ──────────────────────────────────────────────────
 // Source: 通讯协议操作说明.docx — "运行状态标置位" tables.

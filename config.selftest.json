@@ -37,8 +37,8 @@
   ],
   "serial": {
     "barrier_port": "/dev/ttyUSB0",
-    "barrier_baud": 9600,
-    "nv9_port": "/dev/ttyUSB1"
+    "barrier_baud": 19200,
+    "nv9_port": "/dev/ttyACM0"
   },
   "audio": {
     "sound_dir": "resources/sounds",

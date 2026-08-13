@@ -11,3 +11,10 @@ server/
 .vscode/
 .idea/
 *.swp
+
+# Compiled standalone utilities (source .c is tracked; binaries are rebuilt)
+/barie_ctrl
+/nv9_ssp
+
+# Claude Code local settings
+.claude/settings.local.json

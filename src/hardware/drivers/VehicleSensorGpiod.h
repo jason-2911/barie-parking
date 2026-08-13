@@ -52,6 +52,7 @@ public:
     }
 
     void setStateCallback(StateCallback cb) override;
+    void pollLive() override;
 
 private:
     void runLoop();                         // worker-thread entry
